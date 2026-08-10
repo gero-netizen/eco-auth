@@ -259,6 +259,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "Usuários da central" in response.text
     assert "central-users" in response.text
     assert "CRIAR ACESSO E ENVIAR CONVITE" in response.text
+    assert "REENVIAR CONVITE DO PORTAL" in response.text
+    assert "ACESSO AO PORTAL DESATIVADO" in response.text
     assert "Contas que já possuem acesso ao portal" in response.text
     assert "central-active-module" in response.text
     assert "/api/v1/integrations/mkauth/plans" in response.text

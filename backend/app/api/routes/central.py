@@ -1,5 +1,6 @@
 from html import escape
 from datetime import datetime, timezone
+import json
 import secrets
 from urllib.parse import parse_qs
 
@@ -289,6 +290,17 @@ async def central_dashboard(
             "<button type='submit'>CADASTRAR</button></form>"
         )
     portal_customers = portal_customer_store.list_all(organization_id)
+    portal_accesses_json = json.dumps(
+        [
+            {
+                "external_customer_id": item.get("external_customer_id") or "",
+                "external_login": item.get("external_login") or "",
+                "active": bool(item["active"]),
+            }
+            for item in portal_customers
+        ],
+        ensure_ascii=True,
+    ).replace("<", "\\u003c")
     portal_customer_rows = "".join(
         f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
         f"<td>{escape(item['external_login'] or 'Não vinculado')}</td>"
@@ -656,6 +668,7 @@ async def central_dashboard(
       let mkauthTitlesCache = [];
       let routerosDiagnosticLoaded = false;
       let mkauthClientsCache = [];
+      const portalAccesses = {portal_accesses_json};
       let renderActiveMkauthClients = () => {{}};
       const loadRouterosDiagnostic = async (force = false, requestedUsername = '') => {{
         if (routerosDiagnosticLoaded && !force) return;
@@ -819,13 +832,23 @@ async def central_dashboard(
                 const portalButton = document.createElement('button');
                 portalButton.type = 'button';
                 portalButton.className = 'portal-manage-button';
-                portalButton.textContent = 'CRIAR ACESSO E ENVIAR CONVITE';
+                const portalAccess = portalAccesses.find((access) =>
+                  (client.uuid && access.external_customer_id === client.uuid) ||
+                  (access.external_login || '').toLocaleLowerCase('pt-BR') ===
+                    (client.login || '').toLocaleLowerCase('pt-BR'));
+                portalButton.textContent = portalAccess
+                  ? (portalAccess.active ? 'REENVIAR CONVITE DO PORTAL' : 'ACESSO AO PORTAL DESATIVADO')
+                  : 'CRIAR ACESSO E ENVIAR CONVITE';
+                portalButton.disabled = Boolean(portalAccess && !portalAccess.active);
                 portalButton.addEventListener('click', () => {{
                   if (!client.uuid) {{
                     window.alert('Este cliente não possui identificador no MK-AUTH.');
                     return;
                   }}
-                  if (!window.confirm(`Criar acesso ao portal e convite para ${{client.name}}?`)) return;
+                  const confirmation = portalAccess
+                    ? `Gerar um novo convite do portal para ${{client.name}}? O convite anterior deixará de funcionar.`
+                    : `Criar acesso ao portal e convite para ${{client.name}}?`;
+                  if (!window.confirm(confirmation)) return;
                   const form = document.createElement('form');
                   form.method = 'post';
                   form.action = '/central/portal-customers/invite-from-mkauth';
