@@ -82,6 +82,29 @@ def test_organization_can_be_deactivated_without_affecting_another(tmp_path) -> 
     assert organizations.get_active(second["id"])["id"] == second["id"]
 
 
+def test_organization_branding_is_isolated(tmp_path) -> None:
+    organizations = OrganizationStore(f"sqlite:///{tmp_path / 'branding.db'}")
+    first = organizations.create("Provedor Um", "provedor-um")
+    second = organizations.create("Provedor Dois", "provedor-dois")
+
+    organizations.update_branding(
+        first["id"],
+        "Provedor Um Fibra",
+        "#123abc",
+        "suporte@provedorum.test",
+        "+55 71 99999-0000",
+    )
+
+    updated = organizations.get(first["id"])
+    untouched = organizations.get(second["id"])
+    assert updated["name"] == "Provedor Um Fibra"
+    assert updated["primary_color"] == "#123abc"
+    assert updated["support_email"] == "suporte@provedorum.test"
+    assert updated["support_phone"] == "+55 71 99999-0000"
+    assert untouched["name"] == "Provedor Dois"
+    assert untouched["primary_color"] == "#075e54"
+
+
 def test_inventory_is_isolated_by_organization(tmp_path) -> None:
     gateway = SimulatedInventoryGateway(f"sqlite:///{tmp_path / 'inventory.db'}")
     default_id = get_settings().default_organization_id

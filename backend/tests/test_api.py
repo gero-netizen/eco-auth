@@ -253,10 +253,12 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert response.status_code == 200
     assert "Painel da Central" in response.text
     assert "MODO SIMULADO" in response.text
-    assert response.text.count('class="menu-button') == 21
-    assert response.text.count('data-module=') == 21
+    assert response.text.count('class="menu-button') == 22
+    assert response.text.count('data-module=') == 22
     assert "Auditoria" in response.text
     assert "Usuários da central" in response.text
+    assert "Identidade do provedor" in response.text
+    assert "SALVAR IDENTIDADE" in response.text
     assert "central-users" in response.text
     assert "CRIAR ACESSO E ENVIAR CONVITE" in response.text
     assert "REENVIAR CONVITE DO PORTAL" in response.text

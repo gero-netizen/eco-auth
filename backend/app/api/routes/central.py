@@ -1,6 +1,7 @@
 from html import escape
 from datetime import datetime, timezone
 import json
+import re
 import secrets
 from urllib.parse import parse_qs
 
@@ -35,6 +36,7 @@ from app.core.integration_config_store import (
 from app.core.subscription_store import SAAS_PLANS, subscription_store
 from app.core.portal_customer_store import portal_customer_store
 from app.core.portal_invite_store import portal_invite_store
+from app.core.organization_store import organization_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -301,6 +303,18 @@ async def central_dashboard(
         ],
         ensure_ascii=True,
     ).replace("<", "\\u003c")
+    branding_panel = (
+        "<section class='module-panel' data-module='branding'><h2>Identidade do provedor</h2>"
+        "<p>Estas informações personalizam o Portal do Cliente desta organização.</p>"
+        "<form class='create-order' method='post' action='/central/branding'>"
+        f"<label>Nome comercial<input name='name' minlength='3' maxlength='100' value='{escape(session['organization']['name'])}' required></label>"
+        f"<label>Cor principal<input name='primary_color' type='color' value='{escape(session['organization'].get('primary_color') or '#075e54')}' required></label>"
+        f"<label>E-mail de suporte<input name='support_email' type='email' maxlength='150' value='{escape(session['organization'].get('support_email') or '')}'></label>"
+        f"<label>Telefone/WhatsApp<input name='support_phone' maxlength='30' value='{escape(session['organization'].get('support_phone') or '')}'></label>"
+        "<button type='submit'>SALVAR IDENTIDADE</button></form></section>"
+        if can_manage_users
+        else "<section class='module-panel' data-module='branding'><h2>Identidade do provedor</h2><p>Somente proprietários e administradores podem alterar estes dados.</p></section>"
+    )
     portal_customer_rows = "".join(
         f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
         f"<td>{escape(item['external_login'] or 'Não vinculado')}</td>"
@@ -460,6 +474,7 @@ async def central_dashboard(
         <button class="menu-button" type="button" data-target="technicians">Técnicos</button>
         <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
         <button class="menu-button" type="button" data-target="portal-customers">Clientes do portal</button>
+        <button class="menu-button" type="button" data-target="branding">Identidade do provedor</button>
         <button class="menu-button" type="button" data-target="subscription">Plano e assinatura</button>
         {audit_menu}
         <button class="menu-button" type="button" data-target="network">Monitoramento da rede</button>
@@ -599,6 +614,7 @@ async def central_dashboard(
         <p>Contas que já possuem acesso ao portal deste provedor. Senhas nunca são exibidas.</p>
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Login MK-AUTH</th><th>Identificador MK-AUTH</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{portal_customer_rows}</tbody></table>
       </section>
+      {branding_panel}
       {subscription_panel}
       {audit_panel}
       <section class="module-panel" data-module="network"><h2>Monitoramento da rede</h2>
@@ -1585,6 +1601,34 @@ async def central_create_portal_customer(
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     return RedirectResponse("/central#portal-customers", status_code=303)
+
+
+@router.post("/central/branding", include_in_schema=False)
+async def central_update_branding(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    name = fields.get("name", [""])[0].strip()
+    primary_color = fields.get("primary_color", [""])[0].strip()
+    support_email = fields.get("support_email", [""])[0].strip()
+    support_phone = fields.get("support_phone", [""])[0].strip()
+    if (
+        len(name) < 3
+        or not re.fullmatch(r"#[0-9a-fA-F]{6}", primary_color)
+        or len(support_email) > 150
+        or (support_email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", support_email))
+        or len(support_phone) > 30
+    ):
+        raise HTTPException(422, "invalid_organization_branding")
+    organization_store.update_branding(
+        session["organization"]["id"],
+        name,
+        primary_color,
+        support_email,
+        support_phone,
+    )
+    return RedirectResponse("/central#branding", status_code=303)
 
 
 @router.post(

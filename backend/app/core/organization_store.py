@@ -46,12 +46,27 @@ class OrganizationStore:
                     settings.default_organization_slug,
                 ),
             )
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(organizations)"
+                ).fetchall()
+            }
+            for name, definition in {
+                "primary_color": "TEXT NOT NULL DEFAULT '#075e54'",
+                "support_email": "TEXT NOT NULL DEFAULT ''",
+                "support_phone": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE organizations ADD COLUMN {name} {definition}"
+                    )
 
     def get_active(self, organization_id: str) -> dict | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, slug, active, created_at
+                SELECT *
                 FROM organizations
                 WHERE id = ? AND active = 1
                 """,
@@ -63,7 +78,7 @@ class OrganizationStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, slug, active, created_at
+                SELECT *
                 FROM organizations WHERE id = ?
                 """,
                 (organization_id,),
@@ -74,7 +89,7 @@ class OrganizationStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, name, slug, active, created_at
+                SELECT *
                 FROM organizations ORDER BY name
                 """
             ).fetchall()
@@ -84,7 +99,7 @@ class OrganizationStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, slug, active, created_at
+                SELECT *
                 FROM organizations
                 WHERE lower(slug) = lower(?) AND active = 1
                 """,
@@ -124,6 +139,34 @@ class OrganizationStore:
             )
         if updated.rowcount == 0:
             raise KeyError("organization_not_found")
+
+    def update_branding(
+        self,
+        organization_id: str,
+        name: str,
+        primary_color: str,
+        support_email: str,
+        support_phone: str,
+    ) -> dict:
+        with self._connect() as connection:
+            updated = connection.execute(
+                """UPDATE organizations
+                SET name = ?, primary_color = ?, support_email = ?, support_phone = ?
+                WHERE id = ?""",
+                (
+                    name,
+                    primary_color.casefold(),
+                    support_email.casefold(),
+                    support_phone,
+                    organization_id,
+                ),
+            )
+        if updated.rowcount == 0:
+            raise KeyError("organization_not_found")
+        organization = self.get(organization_id)
+        if organization is None:
+            raise RuntimeError("organization_update_failed")
+        return organization
 
     def delete(self, organization_id: str) -> None:
         with self._connect() as connection:

@@ -29,6 +29,19 @@ router = APIRouter(tags=["simulated-client-portal"])
 _customer_id = "sim-customer-1"
 
 
+def _primary_color(organization: dict) -> str:
+    return escape(str(organization.get("primary_color") or "#075e54"))
+
+
+def _support_contact(organization: dict) -> str:
+    contacts = [
+        str(organization.get("support_phone") or "").strip(),
+        str(organization.get("support_email") or "").strip(),
+    ]
+    visible = " • ".join(escape(item) for item in contacts if item)
+    return f"<p><small>Suporte: {visible}</small></p>" if visible else ""
+
+
 def _portal_organization(organization_slug: str | None) -> tuple[dict, str]:
     organization = (
         organization_store.get_default()
@@ -70,12 +83,14 @@ async def portal_login_page(
     error_message = (
         "<p class='error'>Usuário ou senha inválidos.</p>" if error else ""
     )
+    primary_color = _primary_color(organization)
+    support_contact = _support_contact(organization)
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar no portal</title>
-<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}}main{{width:min(390px,90vw);background:white;padding:28px;border-radius:16px;box-shadow:0 4px 22px #17332f22}}h1{{color:#075e54}}form,label{{display:grid;gap:8px}}form{{gap:16px}}input{{padding:11px;border:1px solid #aac0bb;border-radius:8px;font:inherit}}button{{padding:12px;border:0;border-radius:8px;background:#075e54;color:white;font-weight:bold;cursor:pointer}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:10px}}.error{{color:#a32616}}</style></head>
+<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}}main{{width:min(390px,90vw);background:white;padding:28px;border-radius:16px;box-shadow:0 4px 22px #17332f22}}h1{{color:{primary_color}}}form,label{{display:grid;gap:8px}}form{{gap:16px}}input{{padding:11px;border:1px solid #aac0bb;border-radius:8px;font:inherit}}button{{padding:12px;border:0;border-radius:8px;background:{primary_color};color:white;font-weight:bold;cursor:pointer}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:10px}}.error{{color:#a32616}}</style></head>
 <body><main><h1>{escape(organization['name'])}</h1><p>Portal do Cliente</p>
 <p class="simulation"><b>ACESSO:</b> use as credenciais fornecidas pelo seu provedor.</p>{error_message}
-<form method="post" action="/portal/{escape(organization['slug'])}/login"><label>Usuário<input name="username" autocomplete="username" required></label><label>Senha<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">ENTRAR</button></form></main></body></html>"""
+<form method="post" action="/portal/{escape(organization['slug'])}/login"><label>Usuário<input name="username" autocomplete="username" required></label><label>Senha<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">ENTRAR</button></form>{support_contact}</main></body></html>"""
 
 
 @router.post("/portal/{organization_slug}/login")
@@ -136,15 +151,17 @@ async def portal_invite_page(organization_slug: str, token: str) -> str:
     )
     if customer is None:
         raise HTTPException(410, "portal_invite_customer_unavailable")
+    primary_color = _primary_color(organization)
+    support_contact = _support_contact(organization)
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Definir senha</title>
-<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}}main{{width:min(420px,90vw);background:white;padding:28px;border-radius:16px;box-shadow:0 4px 22px #17332f22}}h1{{color:#075e54}}form,label{{display:grid;gap:8px}}form{{gap:16px}}input{{padding:11px;border:1px solid #aac0bb;border-radius:8px;font:inherit}}button{{padding:12px;border:0;border-radius:8px;background:#075e54;color:white;font-weight:bold;cursor:pointer}}</style></head>
+<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}}main{{width:min(420px,90vw);background:white;padding:28px;border-radius:16px;box-shadow:0 4px 22px #17332f22}}h1{{color:{primary_color}}}form,label{{display:grid;gap:8px}}form{{gap:16px}}input{{padding:11px;border:1px solid #aac0bb;border-radius:8px;font:inherit}}button{{padding:12px;border:0;border-radius:8px;background:{primary_color};color:white;font-weight:bold;cursor:pointer}}</style></head>
 <body><main><h1>{escape(organization['name'])}</h1>
 <p>Olá, <b>{escape(customer['name'])}</b>. Defina sua senha de acesso ao Portal do Cliente.</p>
 <form method="post" action="/portal/{escape(organization_slug)}/convite/{escape(token)}">
 <label>Nova senha<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label>
 <label>Confirmar senha<input name="password_confirmation" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label>
-<button type="submit">DEFINIR MINHA SENHA</button></form></main></body></html>"""
+<button type="submit">DEFINIR MINHA SENHA</button></form>{support_contact}</main></body></html>"""
 
 
 @router.post(
@@ -270,6 +287,8 @@ async def client_portal(
     organization, portal_path = _portal_organization(organization_slug)
     customer = _authenticated_customer(request, organization, organization_slug)
     organization_id = organization["id"]
+    primary_color = _primary_color(organization)
+    support_contact = _support_contact(organization)
     mkauth_titles_panel = await _mkauth_titles_panel(organization_id, customer)
     account = ensure_simulated_account(
         organization_id,
@@ -323,7 +342,7 @@ async def client_portal(
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Portal do Cliente</title>
 <style>:root{{--green:#075e54;--mint:#d8f3ee;--ink:#17332f}}*{{box-sizing:border-box}}body{{margin:0;background:#f3f8f7;color:var(--ink);font:16px system-ui,sans-serif}}header{{background:var(--green);color:white;padding:24px 5vw}}header h1{{margin:0}}main{{width:min(720px,92vw);margin:24px auto}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:13px;border-radius:8px}}.network-alert{{background:#ffe1d5;border-left:5px solid #d34a21;padding:15px;border-radius:8px;margin:16px 0}}.network-ok{{background:#dff5ea;border-left:5px solid #16845f;padding:15px;border-radius:8px;margin:16px 0}}section{{background:white;border-radius:14px;padding:20px;margin:16px 0;box-shadow:0 2px 10px #17332f18}}.status{{display:inline-block;background:var(--mint);color:var(--green);padding:7px 11px;border-radius:999px;font-weight:bold}}.ticket-status{{display:inline-block;border-left:4px solid var(--green);padding:7px 9px;background:#edf7f4;color:var(--green);text-decoration:none;font-weight:600}}.ticket-status:hover{{text-decoration:underline}}.amount{{font-size:36px;font-weight:bold;margin:8px 0}}.actions{{display:flex;flex-wrap:wrap;gap:10px}}form{{margin:0}}button{{border:0;border-radius:9px;padding:12px 15px;background:var(--green);color:white;font:inherit;font-weight:bold;cursor:pointer}}button.secondary{{background:#d78200}}button.reset{{background:#647773}}input,textarea{{width:100%;border:1px solid #aac0bb;border-radius:8px;padding:10px;font:inherit}}textarea{{min-height:90px;resize:vertical}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid #dce8e5;text-align:left}}code{{display:block;padding:12px;background:#edf3f1;border-radius:8px;overflow-wrap:anywhere}}small{{color:#627773}}</style></head>
-<body><header><h1>{escape(organization['name'])}</h1><div>Portal do Cliente — {escape(customer['name'])}</div></header><main>
+<body><style>:root{{--green:{primary_color}}}</style><header><h1>{escape(organization['name'])}</h1><div>Portal do Cliente — {escape(customer['name'])}</div>{support_contact}</header><main>
 {logout_form}
 <p class="simulation"><b>MODO SIMULADO</b> — nenhum pagamento ou desbloqueio real será realizado.</p>
 {network_notice}
