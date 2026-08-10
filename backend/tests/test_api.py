@@ -1,0 +1,562 @@
+import hashlib
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+
+from app.core.sync_store import SyncOperationStore
+from app.domain.models import OperationResult
+from app.main import app
+from app.api.routes.support import create_support_request, list_support_requests
+from app.api.routes.network import create_network_incident, resolve_network_incidents
+from app.core.technician_store import technician_store
+
+client = TestClient(app)
+client.post(
+    "/central/login",
+    data={"username": "admin", "password": "Bancada@2026"},
+)
+technician_login = client.post(
+    "/api/v1/auth/technician/login",
+    json={"username": "tecnico", "password": "Campo@2026"},
+)
+client.headers.update(
+    {"Authorization": f"Bearer {technician_login.json()['access_token']}"}
+)
+
+
+def test_health() -> None:
+    assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_technician_api_requires_a_valid_login() -> None:
+    anonymous = TestClient(app)
+    assert anonymous.get("/api/v1/work-orders").status_code == 401
+    assert anonymous.post(
+        "/api/v1/auth/technician/login",
+        json={"username": "tecnico", "password": "invalid"},
+    ).status_code == 401
+
+    login = anonymous.post(
+        "/api/v1/auth/technician/login",
+        json={"username": "tecnico", "password": "Campo@2026"},
+    )
+    assert login.status_code == 200
+    authorized = anonymous.get(
+        "/api/v1/work-orders",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+    assert authorized.status_code == 200
+
+
+def test_central_can_register_a_technician_who_can_login() -> None:
+    username = f"tecnico-{uuid4()}"
+    created = client.post(
+        "/central/technicians",
+        data={
+            "name": "Técnico Novo",
+            "username": username,
+            "password": "Senha@123",
+        },
+        follow_redirects=True,
+    )
+    assert created.status_code == 200
+    assert "Técnico Novo" in created.text
+
+    login = TestClient(app).post(
+        "/api/v1/auth/technician/login",
+        json={"username": username, "password": "Senha@123"},
+    )
+    assert login.status_code == 200
+    assert login.json()["technician"]["name"] == "Técnico Novo"
+    technician_store.delete(login.json()["technician"]["id"])
+
+
+def test_central_can_assign_an_order_to_another_technician() -> None:
+    username = f"field-{uuid4()}"
+    technician = technician_store.create(
+        "Técnico de Campo", username, "Senha@123"
+    )
+    created = None
+    try:
+        created = client.post(
+            "/api/v1/work-orders",
+            json={"customer_name": "Cliente Atribuição", "address": "Rua Teste, 30"},
+        ).json()
+        assigned = client.post(
+            f"/central/work-orders/{created['id']}/assign",
+            data={"technician_id": technician["id"]},
+            follow_redirects=False,
+        )
+        assert assigned.status_code == 303
+
+        login = TestClient(app).post(
+            "/api/v1/auth/technician/login",
+            json={"username": username, "password": "Senha@123"},
+        ).json()
+        orders = TestClient(app).get(
+            "/api/v1/work-orders",
+            headers={"Authorization": f"Bearer {login['access_token']}"},
+        ).json()
+        assert any(order["id"] == created["id"] for order in orders)
+    finally:
+        if created is not None:
+            client.post(
+                f"/central/work-orders/{created['id']}/assign",
+                data={"technician_id": "bench-technician"},
+            )
+        technician_store.delete(technician["id"])
+
+
+def test_central_requires_an_authenticated_session() -> None:
+    anonymous = TestClient(app)
+    protected = anonymous.get("/central", follow_redirects=False)
+    assert protected.status_code == 303
+    assert protected.headers["location"] == "/central/login"
+
+    invalid = anonymous.post(
+        "/central/login",
+        data={"username": "admin", "password": "invalid"},
+        follow_redirects=False,
+    )
+    assert invalid.status_code == 303
+    assert "error=true" in invalid.headers["location"]
+
+    authenticated = anonymous.post(
+        "/central/login",
+        data={"username": "admin", "password": "Bancada@2026"},
+        follow_redirects=True,
+    )
+    assert authenticated.status_code == 200
+    assert "Painel da Central" in authenticated.text
+
+
+def test_central_dashboard_is_explicitly_simulated() -> None:
+    response = client.get("/central")
+    assert response.status_code == 200
+    assert "Painel da Central" in response.text
+    assert "MODO SIMULADO" in response.text
+    assert response.text.count('class="menu-button') == 17
+    assert response.text.count('data-module=') == 17
+    assert "central-active-module" in response.text
+    assert "/api/v1/integrations/mkauth/plans" in response.text
+    assert "mkauth-plans-body" in response.text
+    assert "/api/v1/integrations/mkauth/clients" in response.text
+    assert "mkauth-clients-body" in response.text
+    assert "/api/v1/integrations/mkauth/client-details" in response.text
+    assert "mkauth-client-details" in response.text
+    assert "VER DETALHES" in response.text
+    assert "Clientes desativados" in response.text
+    assert "mkauth-inactive-clients-body" in response.text
+    assert "Diagnóstico PPPoE/RADIUS" in response.text
+    assert "/api/v1/integrations/routeros/diagnostic" in response.text
+    assert "VER PPPoE" in response.text
+    assert "routeros-username-filter" in response.text
+    assert "Verificações automáticas" in response.text
+    assert "routeros-checks-body" in response.text
+    assert "Clientes adicionais" in response.text
+    assert "/api/v1/integrations/mkauth/additional-clients" in response.text
+    assert "Títulos MK-AUTH" in response.text
+    assert "/api/v1/integrations/mkauth/titles" in response.text
+    assert "VER FINANCEIRO" in response.text
+    assert "mkauth-titles-login-filter" in response.text
+    assert "LIBERAR POR 48 HORAS" in response.text
+    assert "/api/v1/integrations/mkauth/trust-unlock" in response.text
+    assert "trust-unlocks-body" in response.text
+    assert "ENCERRAR AGORA" in response.text
+    assert "/mkauth/trust-unlocks/${encodeURIComponent(record.id)}/cancel" in response.text
+    assert "/api/v1/integrations/mkauth/tickets" in response.text
+    assert "mkauth-tickets-body" in response.text
+    assert "GERAR OS" in response.text
+    assert "order-external-ticket-id" in response.text
+    assert "OS arquivadas" in response.text
+    assert "continuam disponíveis para consulta e restauração" in response.text
+    assert "Financeiro e desbloqueio" in response.text
+    assert "Simular Pix" in response.text
+    assert "SIMULAR PIX" in response.text
+    assert "/api/v1/integrations/mkauth/pix-simulations" in response.text
+    assert "BAIXA REAL PIX" in response.text
+    assert "/api/v1/integrations/mkauth/pix-payments" in response.text
+    assert "Digite BAIXAR" in response.text
+    assert "Resolvido por pagamento" in response.text
+    assert "o acesso não foi alterado" in response.text
+    assert "Nenhuma baixa real" in response.text
+    assert "WhatsApp simulado" in response.text
+    assert "Destinatário fictício" in response.text
+    assert "Notificação registrada no WhatsApp simulado" in response.text
+    assert 'http-equiv="refresh"' not in response.text
+    assert "Atualização automática desativada" in response.text
+    assert "mkauth-clients-filter" in response.text
+    assert ".client-state.blocked" in response.text
+    assert "título(s) pendente(s)" in response.text
+    assert 'id="mkauth-titles-filter" type="hidden" value=""' in response.text
+    assert "<th>Situação</th><th>Vencimento</th><th>Ação</th>" in response.text
+    assert "window.setInterval" not in response.text
+
+
+def test_mkauth_probe_remains_safely_simulated_by_default() -> None:
+    response = client.get("/api/v1/integrations/mkauth/probe")
+    assert response.status_code == 200
+    assert response.json()["status"] == "simulated"
+    assert response.json()["read_only"] is True
+    anonymous = TestClient(app).get(
+        "/api/v1/integrations/mkauth/probe", follow_redirects=False
+    )
+    assert anonymous.status_code == 303
+
+
+def test_network_monitor_returns_a_labeled_simulation() -> None:
+    resolve_network_incidents()
+    create_network_incident()
+    response = client.get("/api/v1/network/alerts")
+    assert response.status_code == 200
+    alert = response.json()[0]
+    assert alert["status"] == "active"
+    assert alert["simulated"] is True
+
+
+def test_network_incident_is_visible_to_client_and_can_be_resolved() -> None:
+    resolve_network_incidents()
+    create_network_incident()
+    assert "Nossa equipe já foi informada" in client.get("/cliente").text
+
+    resolved = client.post(
+        "/api/v1/network/incidents/resolve", follow_redirects=True
+    )
+    assert resolved.status_code == 200
+    assert client.get("/api/v1/network/alerts").json() == []
+    assert "Rede sem ocorrências gerais" in client.get("/cliente").text
+
+
+def test_pppoe_simulator_never_requires_a_password() -> None:
+    response = client.post(
+        "/api/v1/access/pppoe/test",
+        json={"work_order_id": "sim-os-1", "username": "cliente.teste"},
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "authenticated"
+    assert result["simulated"] is True
+    assert result["assigned_ip"].startswith("10.20.")
+
+
+def test_ftth_feasibility_simulator_returns_cto_capacity() -> None:
+    response = client.post(
+        "/api/v1/feasibility/check",
+        json={"work_order_id": "sim-os-1", "address": "Ambiente de testes"},
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["simulated"] is True
+    assert result["available_ports"] > 0
+    assert result["total_ports"] in (8, 16)
+
+
+def test_pix_simulator_marks_invoice_paid_and_releases_access() -> None:
+    response = client.post(
+        "/api/v1/financial/accounts/sim-customer-1/simulate-pix"
+    )
+    assert response.status_code == 200
+    account = response.json()
+    assert account["invoice_status"] == "paid"
+    assert account["access_status"] == "active"
+    assert account["simulated"] is True
+
+
+def test_simulated_client_portal_supports_trust_and_pix_flows() -> None:
+    client.post("/cliente/reiniciar")
+    portal = client.get("/cliente")
+    assert portal.status_code == 200
+    assert "MODO SIMULADO" in portal.text
+    assert "Bloqueada" in portal.text
+    assert "PIX-SIMULADO" in portal.text
+
+    trust = client.post("/cliente/desbloqueio-confianca", follow_redirects=True)
+    assert trust.status_code == 200
+    assert "Liberada em confiança" in trust.text
+
+    pix = client.post("/cliente/simular-pix", follow_redirects=True)
+    assert pix.status_code == 200
+    assert "Ativa" in pix.text
+    assert "Paga" in pix.text
+
+
+def test_client_support_request_can_be_converted_to_a_work_order() -> None:
+    opened = client.post(
+        "/cliente/chamados",
+        data={"subject": "Sem conexão", "description": "ONU sem sinal na bancada"},
+        follow_redirects=True,
+    )
+    assert opened.status_code == 200
+    assert "Sem conexão" in opened.text
+    assert "Aguardando central" in opened.text
+
+    central = client.get("/central")
+    assert "Sem conexão" in central.text
+    request_id = max(item["id"] for item in list_support_requests())
+    converted = client.post(
+        f"/central/chamados/{request_id}/gerar-os", follow_redirects=True
+    )
+    assert converted.status_code == 200
+    assert "converted" in converted.text
+
+    portal = client.get("/cliente")
+    assert "Acompanhe meus chamados" in portal.text
+    assert "OS criada" in portal.text
+    assert 'http-equiv="refresh" content="15"' in portal.text
+    assert f"href='/cliente/chamados/{request_id}'" in portal.text
+
+    detail = client.get(f"/cliente/chamados/{request_id}")
+    assert detail.status_code == 200
+    assert "Andamento do atendimento" in detail.text
+    assert "Técnico em deslocamento" in detail.text
+
+
+def test_client_cannot_rate_an_unfinished_work_order() -> None:
+    request_id = create_support_request(
+        "sim-customer-1", "Avaliação antecipada", "OS ainda não concluída"
+    )
+    response = client.post(
+        f"/cliente/chamados/{request_id}/avaliar",
+        data={"rating": "5", "comment": "Ainda não deveria aceitar"},
+    )
+    assert response.status_code == 409
+
+
+def test_whatsapp_simulator_uses_only_a_fictitious_recipient() -> None:
+    response = client.post(
+        "/api/v1/notifications/simulate/invoice_reminder"
+    )
+    assert response.status_code == 200
+    message = response.json()
+    assert message["status"] == "simulated_sent"
+    assert message["recipient"] == "+55 (00) 00000-0000"
+    assert message["simulated"] is True
+
+
+def test_central_can_create_a_work_order_for_mobile_sync() -> None:
+    created = client.post(
+        "/api/v1/work-orders",
+        json={
+            "customer_name": "Novo Cliente Fictício",
+            "address": "Rua de Bancada, 20",
+        },
+    )
+    assert created.status_code == 201
+    order = created.json()
+    assert order["status"] == "assigned"
+
+    pulled = client.get("/api/v1/sync/pull", params={"cursor": "0"})
+    assert pulled.status_code == 200
+    assert any(
+        change["entity_type"] == "work_order"
+        and change["entity_id"] == order["id"]
+        for change in pulled.json()["changes"]
+    )
+
+
+def test_sync_is_idempotent() -> None:
+    operation_id = str(uuid4())
+    current_order = next(
+        order
+        for order in client.get("/api/v1/work-orders").json()
+        if order["id"] == "sim-os-1"
+    )
+    payload = {
+        "device_id": str(uuid4()),
+        "operations": [{
+            "operation_id": operation_id,
+            "entity_type": "work_order",
+            "entity_id": "sim-os-1",
+            "kind": "transition",
+            "base_version": current_order["version"],
+            "occurred_at": "2026-08-03T12:00:00Z",
+            "payload": {"to_status": "arrived"},
+        }],
+    }
+    assert client.post("/api/v1/sync/push", json=payload).json()["results"][0]["status"] == "accepted"
+    assert client.post("/api/v1/sync/push", json=payload).json()["results"][0]["status"] == "duplicate"
+
+
+def test_olt_simulator_provisions_an_onu() -> None:
+    response = client.post(
+        "/api/v1/olt/onus/provision",
+        json={"serial": "test123", "profile": "ftth-500"},
+    )
+    assert response.status_code == 200
+    assert response.json()["serial"] == "TEST123"
+    assert response.json()["status"] == "online"
+
+
+def test_olt_provisioning_is_idempotent_and_audited() -> None:
+    operation_id = str(uuid4())
+    payload = {
+        "operation_id": operation_id,
+        "work_order_id": "sim-os-1",
+        "serial": "audit-onu-1",
+        "profile": "ftth-500",
+    }
+    first = client.post("/api/v1/olt/onus/provision", json=payload)
+    second = client.post("/api/v1/olt/onus/provision", json=payload)
+
+    assert first.status_code == 200
+    assert first.json()["duplicate"] is False
+    assert first.json()["work_order_id"] == "sim-os-1"
+    assert second.json()["duplicate"] is True
+    assert second.json()["operation_id"] == operation_id
+    history = client.get(
+        "/api/v1/olt/provisioning",
+        params={"work_order_id": "sim-os-1"},
+    ).json()
+    audited = next(item for item in history if item["operation_id"] == operation_id)
+    assert audited["serial"] == "AUDIT-ONU-1"
+    assert audited["created_at"]
+
+
+def test_evidence_rejects_an_invalid_hash() -> None:
+    response = client.post(
+        f"/api/v1/work-orders/sim-os-1/evidence/{uuid4()}",
+        content=b"photo",
+        headers={
+            "X-Evidence-Category": "installation_photo",
+            "X-Content-SHA256": "0" * 64,
+            "Content-Type": "application/octet-stream",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_uploaded_evidence_is_available_to_the_central() -> None:
+    evidence_id = uuid4()
+    content = b"fictitious-photo-content"
+    uploaded = client.post(
+        f"/api/v1/work-orders/sim-os-1/evidence/{evidence_id}",
+        content=content,
+        headers={
+            "X-Evidence-Category": "installation_photo",
+            "X-Content-SHA256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    assert uploaded.status_code == 200
+
+    summary = client.get("/api/v1/work-orders/sim-os-1/evidence")
+    assert summary.status_code == 200
+    assert any(item["id"] == str(evidence_id) for item in summary.json()["files"])
+
+    gallery = client.get("/central/work-orders/sim-os-1/evidence")
+    assert gallery.status_code == 200
+    assert "Fotos e assinatura" in gallery.text
+    assert str(evidence_id) in gallery.text
+
+
+def test_central_generates_a_printable_work_order_report() -> None:
+    report = client.get("/central/work-orders/sim-os-1/report")
+    assert report.status_code == 200
+    assert "Relatório técnico" in report.text
+    assert "Imprimir ou salvar em PDF" in report.text
+    assert "Checklist das comprovações" in report.text
+    assert "MODO SIMULADO" in report.text
+
+
+def test_inventory_consumption_is_applied_once() -> None:
+    operation_id = str(uuid4())
+    inventory_before = client.get("/api/v1/inventory").json()
+    connector_before = next(
+        item for item in inventory_before if item["id"] == "fast-connector"
+    )
+    payload = {
+        "device_id": str(uuid4()),
+        "operations": [{
+            "operation_id": operation_id,
+            "entity_type": "inventory_movement",
+            "entity_id": str(uuid4()),
+            "kind": "consume",
+            "base_version": connector_before["version"],
+            "occurred_at": "2026-08-03T12:00:00Z",
+            "payload": {"item_id": "fast-connector", "quantity": 2},
+        }],
+    }
+    first = client.post("/api/v1/sync/push", json=payload).json()["results"][0]
+    second = client.post("/api/v1/sync/push", json=payload).json()["results"][0]
+    assert first["status"] == "accepted"
+    assert second["status"] == "duplicate"
+    inventory = client.get("/api/v1/inventory").json()
+    connector = next(item for item in inventory if item["id"] == "fast-connector")
+    assert connector["quantity"] == connector_before["quantity"] - 2
+
+
+def test_central_restock_is_published_for_mobile_sync() -> None:
+    before = next(
+        item
+        for item in client.get("/api/v1/inventory").json()
+        if item["id"] == "drop-cable"
+    )
+    restocked = client.post(
+        "/api/v1/inventory/drop-cable/restock", json={"quantity": 10}
+    )
+    assert restocked.status_code == 200
+    assert restocked.json()["quantity"] == before["quantity"] + 10
+    assert restocked.json()["version"] == before["version"] + 1
+
+    pulled = client.get("/api/v1/sync/pull", params={"cursor": "0"})
+    assert any(
+        change["entity_type"] == "inventory_item"
+        and change["entity_id"] == "drop-cable"
+        for change in pulled.json()["changes"]
+    )
+    central = client.get("/central")
+    assert "Histórico de materiais" in central.text
+    assert "Reposição" in central.text
+
+
+def test_sync_journal_survives_store_recreation(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'sync-test.db'}"
+    operation_id = uuid4()
+    first_store = SyncOperationStore(database_url)
+    first_store.save(
+        OperationResult(
+            operation_id=operation_id,
+            status="accepted",
+            server_version=2,
+        )
+    )
+
+    restarted_store = SyncOperationStore(database_url)
+    restored = restarted_store.get(str(operation_id))
+
+    assert restored is not None
+    assert restored.status == "accepted"
+    assert restored.server_version == 2
+
+
+def test_incremental_change_feed_survives_restart(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'changes-test.db'}"
+    operation_id = uuid4()
+    store = SyncOperationStore(database_url)
+    store.save(
+        OperationResult(
+            operation_id=operation_id,
+            status="accepted",
+            server_version=2,
+        ),
+        change={
+            "entity_type": "work_order",
+            "entity_id": "sim-os-1",
+            "kind": "upsert",
+            "payload": {"id": "sim-os-1", "version": 2},
+        },
+    )
+
+    restarted_store = SyncOperationStore(database_url)
+    changes, next_cursor = restarted_store.changes_after(0)
+    no_new_changes, same_cursor = restarted_store.changes_after(next_cursor)
+
+    assert len(changes) == 1
+    assert changes[0]["payload"]["version"] == 2
+    assert next_cursor > 0
+    assert no_new_changes == []
+    assert same_cursor == next_cursor
+
+
+def test_pull_rejects_invalid_cursor() -> None:
+    response = client.get("/api/v1/sync/pull", params={"cursor": "invalid"})
+    assert response.status_code == 422
