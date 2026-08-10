@@ -26,21 +26,29 @@ class SyncPullResult {
 }
 
 class WorkOrderRemoteDataSource {
-  WorkOrderRemoteDataSource({Dio? dio})
-      : _dio = dio ??
-            Dio(
-              BaseOptions(
-                baseUrl: apiBaseUrl,
-                connectTimeout: const Duration(seconds: 5),
-                receiveTimeout: const Duration(seconds: 10),
-                headers: TechnicianSession.accessToken == null
-                    ? null
-                    : {
-                        'Authorization':
-                            'Bearer ${TechnicianSession.accessToken}'
-                      },
-              ),
-            );
+  WorkOrderRemoteDataSource({Dio? dio}) : _dio = dio ?? _buildDefaultDio();
+
+  static Dio _buildDefaultDio() {
+    final dio = Dio(
+      BaseOptions(
+        baseUrl: apiBaseUrl,
+        connectTimeout: const Duration(seconds: 5),
+        receiveTimeout: const Duration(seconds: 10),
+      ),
+    );
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          final token = TechnicianSession.accessToken;
+          if (token != null) {
+            options.headers['Authorization'] = 'Bearer $token';
+          }
+          handler.next(options);
+        },
+      ),
+    );
+    return dio;
+  }
 
   final Dio _dio;
 

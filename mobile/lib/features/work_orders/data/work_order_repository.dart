@@ -107,7 +107,6 @@ class WorkOrderRepository implements WorkOrderRepositoryContract {
       await _local.upsertInventoryItem(item);
     }
     await _local.writeSyncCursor(pulled.nextCursor);
-    await _local.replaceAll(await _remote.fetchAll());
     if (refreshWorkOrders) {
       await _local.replaceAll(await _remote.fetchAll());
     }
