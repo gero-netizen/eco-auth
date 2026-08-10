@@ -3,6 +3,7 @@ import hmac
 import os
 import sqlite3
 from pathlib import Path
+from uuid import uuid4
 
 from app.core.config import get_settings
 
@@ -108,6 +109,49 @@ class PortalCustomerStore:
                 (organization_id, customer_id),
             ).fetchone()
         return self._public(row) if row else None
+
+    def list_all(self, organization_id: str) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM portal_customers WHERE organization_id = ? ORDER BY name, username",
+                (organization_id,),
+            ).fetchall()
+        return [self._public(row) for row in rows]
+
+    def create(self, organization_id: str, name: str, username: str, password: str) -> dict:
+        customer_id = f"portal-customer-{uuid4()}"
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """INSERT INTO portal_customers
+                    (id, organization_id, name, username, password_hash)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (customer_id, organization_id, name, username.casefold(), self._hash_password(password)),
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValueError("portal_username_already_exists") from error
+        customer = self.get_active(organization_id, customer_id)
+        if customer is None:
+            raise RuntimeError("portal_customer_creation_failed")
+        return customer
+
+    def set_active(self, organization_id: str, customer_id: str, active: bool) -> None:
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE portal_customers SET active = ? WHERE organization_id = ? AND id = ?",
+                (int(active), organization_id, customer_id),
+            )
+        if updated.rowcount == 0:
+            raise KeyError("portal_customer_not_found")
+
+    def reset_password(self, organization_id: str, customer_id: str, password: str) -> None:
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE portal_customers SET password_hash = ? WHERE organization_id = ? AND id = ?",
+                (self._hash_password(password), organization_id, customer_id),
+            )
+        if updated.rowcount == 0:
+            raise KeyError("portal_customer_not_found")
 
     @staticmethod
     def _public(row: sqlite3.Row) -> dict:

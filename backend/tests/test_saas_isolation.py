@@ -424,3 +424,18 @@ def test_portal_customers_are_isolated_by_organization(tmp_path) -> None:
     assert second["organization_id"] == "provider-2"
     assert store.get_active("provider-2", first["id"])["organization_id"] == "provider-2"
     assert store.authenticate("provider-1", "cliente", "senha-errada") is None
+
+
+def test_portal_customer_management_stays_inside_organization(tmp_path) -> None:
+    store = PortalCustomerStore(f"sqlite:///{tmp_path / 'portal-management.db'}")
+    created = store.create("provider-1", "Maria Cliente", "maria", "Senha@2026")
+
+    assert store.authenticate("provider-1", "maria", "Senha@2026") is not None
+    assert store.authenticate("provider-2", "maria", "Senha@2026") is None
+    assert store.list_all("provider-2") == []
+
+    store.set_active("provider-1", created["id"], False)
+    assert store.authenticate("provider-1", "maria", "Senha@2026") is None
+    store.reset_password("provider-1", created["id"], "NovaSenha@2026")
+    store.set_active("provider-1", created["id"], True)
+    assert store.authenticate("provider-1", "maria", "NovaSenha@2026") is not None

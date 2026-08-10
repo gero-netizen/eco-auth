@@ -28,6 +28,7 @@ from app.core.integration_config_store import (
     integration_config_store,
 )
 from app.core.subscription_store import SAAS_PLANS, subscription_store
+from app.core.portal_customer_store import portal_customer_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -272,6 +273,32 @@ async def central_dashboard(
             f"<label>Perfil<select name='role' required>{role_options}</select></label>"
             "<button type='submit'>CADASTRAR</button></form>"
         )
+    portal_customer_store.ensure_demo(organization_id, session["organization"]["name"])
+    portal_customers = portal_customer_store.list_all(organization_id)
+    portal_customer_rows = "".join(
+        f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
+        f"<td>{'Ativo' if item['active'] else 'Inativo'}</td><td>"
+        + (
+            f"<form method='post' action='/central/portal-customers/{escape(item['id'])}/toggle'>"
+            f"<input type='hidden' name='active' value='{'0' if item['active'] else '1'}'>"
+            f"<button class='{'secondary' if item['active'] else ''}' type='submit'>"
+            f"{'DESATIVAR' if item['active'] else 'ATIVAR'}</button></form>"
+            f"<form method='post' action='/central/portal-customers/{escape(item['id'])}/password'>"
+            "<input name='password' type='password' minlength='8' maxlength='200' placeholder='Nova senha' required>"
+            "<button type='submit'>REDEFINIR SENHA</button></form>"
+            if can_manage_users else "-"
+        ) + "</td></tr>"
+        for item in portal_customers
+    ) or "<tr><td colspan='4'>Nenhum cliente cadastrado.</td></tr>"
+    portal_customer_form = ""
+    if can_manage_users:
+        portal_customer_form = (
+            "<form class='create-order' method='post' action='/central/portal-customers'>"
+            "<label>Nome<input name='name' minlength='3' maxlength='100' required></label>"
+            "<label>Usuário<input name='username' minlength='3' maxlength='80' required></label>"
+            "<label>Senha inicial<input name='password' type='password' minlength='8' maxlength='200' required></label>"
+            "<button type='submit'>CADASTRAR</button></form>"
+        )
     subscription = subscription_store.get_or_create(organization_id)
     subscription_plan = subscription["plan"]
     active_user_count = sum(bool(item["active"]) for item in all_central_users)
@@ -408,6 +435,7 @@ async def central_dashboard(
         <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
         <button class="menu-button" type="button" data-target="technicians">Técnicos</button>
         <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
+        <button class="menu-button" type="button" data-target="portal-customers">Clientes do portal</button>
         <button class="menu-button" type="button" data-target="subscription">Plano e assinatura</button>
         {audit_menu}
         <button class="menu-button" type="button" data-target="network">Monitoramento da rede</button>
@@ -541,6 +569,12 @@ async def central_dashboard(
         <p>Organização: <b>{escape(session['organization']['name'])}</b> • Seu perfil: <b>{escape(role_labels[current_user['role']])}</b></p>
         {central_user_form}
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{central_user_rows}</tbody></table>
+      </section>
+      <section class="module-panel" data-module="portal-customers">
+        <h2>Clientes do portal</h2>
+        <p>Contas que acessam o portal deste provedor. Senhas nunca são exibidas.</p>
+        {portal_customer_form}
+        <table><thead><tr><th>Nome</th><th>Usuário</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{portal_customer_rows}</tbody></table>
       </section>
       {subscription_panel}
       {audit_panel}
@@ -1454,6 +1488,66 @@ async def central_create_user(
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     return RedirectResponse("/central#central-users", status_code=303)
+
+
+@router.post("/central/portal-customers", include_in_schema=False)
+async def central_create_portal_customer(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    name = fields.get("name", [""])[0].strip()
+    username = fields.get("username", [""])[0].strip().casefold()
+    password = fields.get("password", [""])[0]
+    if len(name) < 3 or len(username) < 3 or len(password) < 8:
+        raise HTTPException(422, "invalid_portal_customer_data")
+    try:
+        portal_customer_store.create(
+            session["organization"]["id"], name, username, password
+        )
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return RedirectResponse("/central#portal-customers", status_code=303)
+
+
+@router.post(
+    "/central/portal-customers/{customer_id}/toggle", include_in_schema=False
+)
+async def central_toggle_portal_customer(
+    customer_id: str,
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    active = fields.get("active", ["0"])[0] == "1"
+    try:
+        portal_customer_store.set_active(
+            session["organization"]["id"], customer_id, active
+        )
+    except KeyError as error:
+        raise HTTPException(404, str(error)) from error
+    return RedirectResponse("/central#portal-customers", status_code=303)
+
+
+@router.post(
+    "/central/portal-customers/{customer_id}/password", include_in_schema=False
+)
+async def central_reset_portal_customer_password(
+    customer_id: str,
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    password = fields.get("password", [""])[0]
+    if len(password) < 8:
+        raise HTTPException(422, "invalid_portal_customer_password")
+    try:
+        portal_customer_store.reset_password(
+            session["organization"]["id"], customer_id, password
+        )
+    except KeyError as error:
+        raise HTTPException(404, str(error)) from error
+    return RedirectResponse("/central#portal-customers", status_code=303)
 
 
 @router.post("/central/subscription/simulate-plan", include_in_schema=False)
