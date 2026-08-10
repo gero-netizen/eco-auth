@@ -23,7 +23,10 @@ from app.core.central_user_store import CENTRAL_USER_ROLES, central_user_store
 from app.core.audit_store import audit_store
 from app.core.technician_store import technician_store
 from app.core.config import get_settings
-from app.core.integration_config_store import get_integration_settings
+from app.core.integration_config_store import (
+    get_integration_settings,
+    integration_config_store,
+)
 from app.core.subscription_store import SAAS_PLANS, subscription_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
@@ -37,6 +40,7 @@ router = APIRouter(
 async def central_dashboard(
     session: dict = Depends(require_central_session),
 ) -> str:
+    organization_id = session["organization"]["id"]
     all_orders = await simulated_mkauth_gateway.list_work_orders(None)
     orders = [
         order
@@ -48,16 +52,39 @@ async def central_dashboard(
         for order in all_orders
         if order.archived_at is not None and order.deleted_at is None
     ]
-    inventory = await simulated_inventory_gateway.list_items("bench-technician")
-    inventory_movements = simulated_inventory_gateway.list_movements()
-    provisioning = provisioning_store.list_for_work_order("sim-os-1")
-    financial_accounts = list(simulated_financial_accounts.values())
-    messages = list(reversed(simulated_messages[-5:]))
-    support_requests = list_support_requests()
-    network_alerts = list_active_alerts()
-    organization_id = session["organization"]["id"]
+    is_default_organization = (
+        organization_id == get_settings().default_organization_id
+    )
+    inventory = (
+        await simulated_inventory_gateway.list_items("bench-technician")
+        if is_default_organization
+        else []
+    )
+    inventory_movements = (
+        simulated_inventory_gateway.list_movements()
+        if is_default_organization
+        else []
+    )
+    provisioning = (
+        provisioning_store.list_for_work_order("sim-os-1")
+        if is_default_organization
+        else []
+    )
+    financial_accounts = (
+        list(simulated_financial_accounts.values())
+        if is_default_organization
+        else []
+    )
+    messages = (
+        list(reversed(simulated_messages[-5:]))
+        if is_default_organization
+        else []
+    )
+    support_requests = list_support_requests() if is_default_organization else []
+    network_alerts = list_active_alerts() if is_default_organization else []
     technicians = technician_store.list_all(organization_id)
-    mkauth_settings = get_integration_settings()
+    integration_config_store.ensure_unconfigured(organization_id)
+    mkauth_settings = get_integration_settings(organization_id)
     active_technicians = [item for item in technicians if item["active"]]
     technician_names = {item["id"]: item["name"] for item in technicians}
     technician_options = "".join(

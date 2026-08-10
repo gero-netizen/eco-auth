@@ -69,7 +69,7 @@ def require_central_session(request: Request) -> dict:
 
 
 def require_central_roles(*allowed_roles: str):
-    def dependency(request: Request) -> dict:
+    async def dependency(request: Request) -> dict:
         session = require_central_session(request)
         if session["user"]["role"] not in allowed_roles:
             raise HTTPException(403, "central_role_not_allowed")
@@ -79,7 +79,7 @@ def require_central_roles(*allowed_roles: str):
     return dependency
 
 
-def require_central_access(request: Request) -> dict:
+async def require_central_access(request: Request) -> dict:
     session = require_central_session(request)
     if session["user"]["role"] == "viewer" and request.method not in {
         "GET",

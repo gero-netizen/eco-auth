@@ -17,6 +17,7 @@ from app.api.routes import (
     network,
     notifications,
     olt,
+    platform,
     saas,
     sync,
     support,
@@ -67,5 +68,6 @@ app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(saas.router, prefix="/api/v1")
 app.include_router(central_auth.router)
 app.include_router(central.router)
+app.include_router(platform.router)
 app.include_router(client_portal.router)
 app.include_router(support.router)

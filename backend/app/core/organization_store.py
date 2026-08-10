@@ -59,6 +59,27 @@ class OrganizationStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def get(self, organization_id: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, name, slug, active, created_at
+                FROM organizations WHERE id = ?
+                """,
+                (organization_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_all(self) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, name, slug, active, created_at
+                FROM organizations ORDER BY name
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_active_by_slug(self, slug: str) -> dict | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -94,6 +115,21 @@ class OrganizationStore:
         if organization is None:
             raise RuntimeError("organization_creation_failed")
         return organization
+
+    def set_active(self, organization_id: str, active: bool) -> None:
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE organizations SET active = ? WHERE id = ?",
+                (int(active), organization_id),
+            )
+        if updated.rowcount == 0:
+            raise KeyError("organization_not_found")
+
+    def delete(self, organization_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM organizations WHERE id = ?", (organization_id,)
+            )
 
 
 organization_store = OrganizationStore(get_settings().database_url)

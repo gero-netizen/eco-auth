@@ -140,6 +140,33 @@ class IntegrationConfigStore:
             routeros_password=self._decrypt(row["routeros_password_encrypted"]),
         )
 
+    def ensure_unconfigured(self, organization_id: str) -> None:
+        """Cria um registro seguro e vazio sem herdar integrações de outro provedor."""
+        settings = get_settings()
+        if organization_id == settings.default_organization_id:
+            return
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO organization_integrations (
+                    organization_id, mkauth_mode, mkauth_base_url,
+                    mkauth_client_id_encrypted, mkauth_client_secret_encrypted,
+                    mkauth_verify_ssl, mkauth_allow_http, mkauth_writes_enabled,
+                    routeros_mode, routeros_host, routeros_port,
+                    routeros_username_encrypted, routeros_password_encrypted
+                ) VALUES (?, 'simulated', ?, ?, ?, 1, 0, 0,
+                          'simulated', '', 8728, ?, ?)
+                """,
+                (
+                    organization_id,
+                    "http://mkauth.not-configured.invalid",
+                    self._encrypt(""),
+                    self._encrypt(""),
+                    self._encrypt(""),
+                    self._encrypt(""),
+                ),
+            )
+
     def save(
         self, organization_id: str, config: TenantIntegrationSettings
     ) -> None:
@@ -212,5 +239,7 @@ class IntegrationConfigStore:
 integration_config_store = IntegrationConfigStore(get_settings().database_url)
 
 
-def get_integration_settings() -> TenantIntegrationSettings:
-    return integration_config_store.get()
+def get_integration_settings(
+    organization_id: str | None = None,
+) -> TenantIntegrationSettings:
+    return integration_config_store.get(organization_id)

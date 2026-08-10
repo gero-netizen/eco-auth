@@ -29,6 +29,22 @@ def test_health() -> None:
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_platform_administration_requires_its_own_session() -> None:
+    anonymous = TestClient(app)
+    blocked = anonymous.get("/plataforma", follow_redirects=False)
+    assert blocked.status_code == 303
+    assert blocked.headers["location"] == "/plataforma/login"
+
+    login = anonymous.post(
+        "/plataforma/login",
+        data={"username": "admin", "password": "Bancada@2026"},
+        follow_redirects=True,
+    )
+    assert login.status_code == 200
+    assert "Administração SaaS" in login.text
+    assert "Cadastrar novo provedor" in login.text
+
+
 def test_central_session_is_scoped_to_default_organization() -> None:
     response = client.get("/api/v1/saas/organization/current")
     assert response.status_code == 200

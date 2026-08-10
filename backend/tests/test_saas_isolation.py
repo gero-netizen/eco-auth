@@ -40,6 +40,18 @@ def test_technicians_are_isolated_by_organization(tmp_path) -> None:
     ]
 
 
+def test_organization_can_be_deactivated_without_affecting_another(tmp_path) -> None:
+    organizations = OrganizationStore(f"sqlite:///{tmp_path / 'organizations.db'}")
+    first = organizations.create("Provedor Um", "provedor-um")
+    second = organizations.create("Provedor Dois", "provedor-dois")
+
+    organizations.set_active(first["id"], False)
+
+    assert organizations.get_active(first["id"]) is None
+    assert organizations.get(first["id"])["active"] == 0
+    assert organizations.get_active(second["id"])["id"] == second["id"]
+
+
 def test_work_orders_are_isolated_by_organization(tmp_path) -> None:
     asyncio.run(_assert_work_order_isolation(tmp_path))
 
@@ -123,6 +135,20 @@ def test_integration_credentials_are_encrypted_and_isolated(tmp_path) -> None:
         ).fetchone()
     assert "segredo-um" not in stored[0]
     assert "senha-um" not in stored[1]
+
+
+def test_new_organization_integrations_never_inherit_default_credentials(tmp_path) -> None:
+    store = IntegrationConfigStore(f"sqlite:///{tmp_path / 'new-tenant-integrations.db'}")
+    store.ensure_unconfigured("provedor-novo")
+    current = store.get("provedor-novo")
+
+    assert current.mkauth_mode == "simulated"
+    assert current.mkauth_client_id == ""
+    assert current.mkauth_client_secret == ""
+    assert current.mkauth_writes_enabled is False
+    assert current.routeros_mode == "simulated"
+    assert current.routeros_username == ""
+    assert current.routeros_password == ""
 
 
 def test_central_users_are_isolated_by_organization(tmp_path) -> None:

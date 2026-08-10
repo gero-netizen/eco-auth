@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "development-only-change-me"
     central_username: str = ""
     central_password: str = ""
+    platform_admin_username: str = ""
+    platform_admin_password: str = ""
     technician_username: str = ""
     technician_password: str = ""
     default_organization_id: str = "g7-networks"
