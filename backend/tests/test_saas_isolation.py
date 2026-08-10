@@ -26,6 +26,7 @@ from app.api.routes.support import (
 from app.core.provisioning_store import ProvisioningStore
 from app.api.routes.evidence import EquipmentRequest, link_equipment, list_equipment
 from app.api.routes.olt import _gateway, _gateways
+from app.core.portal_customer_store import PortalCustomerStore
 from app.domain.models import OperationResult
 from app.api.routes.financial import list_financial_accounts
 from app.api.routes.network import (
@@ -407,3 +408,19 @@ def test_olt_simulator_state_is_isolated_by_organization() -> None:
     finally:
         _gateways.pop(first_id, None)
         _gateways.pop(second_id, None)
+
+
+def test_portal_customers_are_isolated_by_organization(tmp_path) -> None:
+    store = PortalCustomerStore(f"sqlite:///{tmp_path / 'portal-customers.db'}")
+    store.ensure_demo("provider-1", "Provedor Um")
+    store.ensure_demo("provider-2", "Provedor Dois")
+
+    first = store.authenticate("provider-1", "cliente", "Cliente@2026")
+    second = store.authenticate("provider-2", "cliente", "Cliente@2026")
+
+    assert first is not None
+    assert second is not None
+    assert first["organization_id"] == "provider-1"
+    assert second["organization_id"] == "provider-2"
+    assert store.get_active("provider-2", first["id"])["organization_id"] == "provider-2"
+    assert store.authenticate("provider-1", "cliente", "senha-errada") is None

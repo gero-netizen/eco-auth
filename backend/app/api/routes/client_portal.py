@@ -1,4 +1,5 @@
 from html import escape
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -10,6 +11,12 @@ from app.api.routes.financial import (
     trust_unlock_account,
 )
 from app.core.organization_store import organization_store
+from app.core.portal_customer_store import portal_customer_store
+from app.core.portal_session import (
+    PORTAL_COOKIE_NAME,
+    new_portal_session,
+    require_portal_customer,
+)
 from app.api.routes.support import list_support_requests, save_rating
 from app.api.routes.network import list_active_alerts
 from app.integrations.mkauth.client import simulated_mkauth_gateway
@@ -32,6 +39,82 @@ def _portal_organization(organization_slug: str | None) -> tuple[dict, str]:
         else f"/portal/{organization['slug']}"
     )
     return organization, portal_path
+
+
+def _authenticated_customer(
+    request: Request, organization: dict, organization_slug: str | None
+) -> dict:
+    if organization_slug is None:
+        return {"id": _customer_id, "name": "Cliente Financeiro de Bancada"}
+    try:
+        return require_portal_customer(request, organization["id"])
+    except HTTPException as error:
+        raise HTTPException(
+            303,
+            "portal_login_required",
+            headers={"Location": f"/portal/{organization['slug']}/login"},
+        ) from error
+
+
+@router.get("/portal/{organization_slug}/login", response_class=HTMLResponse)
+async def portal_login_page(
+    organization_slug: str, error: bool = False
+) -> str:
+    organization = organization_store.get_active_by_slug(organization_slug)
+    if organization is None:
+        raise HTTPException(404, "organization_not_found")
+    portal_customer_store.ensure_demo(organization["id"], organization["name"])
+    error_message = (
+        "<p class='error'>Usuário ou senha inválidos.</p>" if error else ""
+    )
+    return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar no portal</title>
+<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}}main{{width:min(390px,90vw);background:white;padding:28px;border-radius:16px;box-shadow:0 4px 22px #17332f22}}h1{{color:#075e54}}form,label{{display:grid;gap:8px}}form{{gap:16px}}input{{padding:11px;border:1px solid #aac0bb;border-radius:8px;font:inherit}}button{{padding:12px;border:0;border-radius:8px;background:#075e54;color:white;font-weight:bold;cursor:pointer}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:10px}}.error{{color:#a32616}}</style></head>
+<body><main><h1>{escape(organization['name'])}</h1><p>Portal do Cliente</p>
+<p class="simulation"><b>BANCADA:</b> use cliente / Cliente@2026</p>{error_message}
+<form method="post" action="/portal/{escape(organization['slug'])}/login"><label>Usuário<input name="username" autocomplete="username" required></label><label>Senha<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">ENTRAR</button></form></main></body></html>"""
+
+
+@router.post("/portal/{organization_slug}/login")
+async def portal_login(
+    organization_slug: str, request: Request
+) -> RedirectResponse:
+    organization = organization_store.get_active_by_slug(organization_slug)
+    if organization is None:
+        raise HTTPException(404, "organization_not_found")
+    portal_customer_store.ensure_demo(organization["id"], organization["name"])
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    customer = portal_customer_store.authenticate(
+        organization["id"],
+        fields.get("username", [""])[0],
+        fields.get("password", [""])[0],
+    )
+    if customer is None:
+        return RedirectResponse(
+            f"/portal/{organization_slug}/login?error=true", status_code=303
+        )
+    response = RedirectResponse(f"/portal/{organization_slug}", status_code=303)
+    response.set_cookie(
+        PORTAL_COOKIE_NAME,
+        new_portal_session(customer),
+        max_age=8 * 60 * 60,
+        httponly=True,
+        samesite="strict",
+        secure=False,
+        path=f"/portal/{organization_slug}",
+    )
+    return response
+
+
+@router.post("/portal/{organization_slug}/logout")
+async def portal_logout(organization_slug: str) -> RedirectResponse:
+    response = RedirectResponse(
+        f"/portal/{organization_slug}/login", status_code=303
+    )
+    response.delete_cookie(
+        PORTAL_COOKIE_NAME, path=f"/portal/{organization_slug}"
+    )
+    return response
 
 
 def _label(value: str) -> str:
@@ -58,13 +141,16 @@ def _work_order_label(value: str) -> str:
 
 @router.get("/cliente", response_class=HTMLResponse)
 @router.get("/portal/{organization_slug}", response_class=HTMLResponse)
-async def client_portal(organization_slug: str | None = None) -> str:
+async def client_portal(
+    request: Request, organization_slug: str | None = None
+) -> str:
     organization, portal_path = _portal_organization(organization_slug)
+    customer = _authenticated_customer(request, organization, organization_slug)
     organization_id = organization["id"]
     account = ensure_simulated_account(
         organization_id,
         organization["name"],
-        _customer_id,
+        customer["id"],
     )
     access_status = escape(_label(account["access_status"]))
     invoice_status = escape(_label(account["invoice_status"]))
@@ -72,7 +158,7 @@ async def client_portal(organization_slug: str | None = None) -> str:
         f"Liberação válida até {escape(account['trust_until'])}"
         if account.get("trust_until") else "Disponível somente para este teste de bancada."
     )
-    requests = list_support_requests(_customer_id, organization_id)
+    requests = list_support_requests(customer["id"], organization_id)
     alerts = list_active_alerts(organization_id)
     network_notice = (
         "".join(
@@ -104,10 +190,17 @@ async def client_portal(organization_slug: str | None = None) -> str:
             f"<td><a class='ticket-status' href='{portal_path}/chamados/{item['id']}'>{escape(status)}</a></td></tr>"
         )
     request_rows = "".join(rows) or "<tr><td colspan='3'>Nenhum chamado aberto.</td></tr>"
+    logout_form = (
+        f'<form method="post" action="{portal_path}/logout">'
+        '<button type="submit">SAIR</button></form>'
+        if organization_slug is not None
+        else ""
+    )
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Portal do Cliente</title>
 <style>:root{{--green:#075e54;--mint:#d8f3ee;--ink:#17332f}}*{{box-sizing:border-box}}body{{margin:0;background:#f3f8f7;color:var(--ink);font:16px system-ui,sans-serif}}header{{background:var(--green);color:white;padding:24px 5vw}}header h1{{margin:0}}main{{width:min(720px,92vw);margin:24px auto}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:13px;border-radius:8px}}.network-alert{{background:#ffe1d5;border-left:5px solid #d34a21;padding:15px;border-radius:8px;margin:16px 0}}.network-ok{{background:#dff5ea;border-left:5px solid #16845f;padding:15px;border-radius:8px;margin:16px 0}}section{{background:white;border-radius:14px;padding:20px;margin:16px 0;box-shadow:0 2px 10px #17332f18}}.status{{display:inline-block;background:var(--mint);color:var(--green);padding:7px 11px;border-radius:999px;font-weight:bold}}.ticket-status{{display:inline-block;border-left:4px solid var(--green);padding:7px 9px;background:#edf7f4;color:var(--green);text-decoration:none;font-weight:600}}.ticket-status:hover{{text-decoration:underline}}.amount{{font-size:36px;font-weight:bold;margin:8px 0}}.actions{{display:flex;flex-wrap:wrap;gap:10px}}form{{margin:0}}button{{border:0;border-radius:9px;padding:12px 15px;background:var(--green);color:white;font:inherit;font-weight:bold;cursor:pointer}}button.secondary{{background:#d78200}}button.reset{{background:#647773}}input,textarea{{width:100%;border:1px solid #aac0bb;border-radius:8px;padding:10px;font:inherit}}textarea{{min-height:90px;resize:vertical}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid #dce8e5;text-align:left}}code{{display:block;padding:12px;background:#edf3f1;border-radius:8px;overflow-wrap:anywhere}}small{{color:#627773}}</style></head>
-<body><header><h1>{escape(organization['name'])}</h1><div>Portal do Cliente — {escape(account['customer_name'])}</div></header><main>
+<body><header><h1>{escape(organization['name'])}</h1><div>Portal do Cliente — {escape(customer['name'])}</div></header><main>
+{logout_form}
 <p class="simulation"><b>MODO SIMULADO</b> — nenhum pagamento ou desbloqueio real será realizado.</p>
 {network_notice}
 <section><h2>Minha conexão</h2><p class="status">{access_status}</p><p>{trust_message}</p></section>
@@ -132,13 +225,16 @@ async def client_portal(organization_slug: str | None = None) -> str:
     response_class=HTMLResponse,
 )
 async def client_support_detail(
-    request_id: int, organization_slug: str | None = None
+    request_id: int,
+    request: Request,
+    organization_slug: str | None = None,
 ) -> str:
     organization, portal_path = _portal_organization(organization_slug)
+    customer = _authenticated_customer(request, organization, organization_slug)
     organization_id = organization["id"]
     support_request = next(
         (
-            item for item in list_support_requests(_customer_id, organization_id)
+            item for item in list_support_requests(customer["id"], organization_id)
             if item["id"] == request_id
         ),
         None,
@@ -204,12 +300,13 @@ async def rate_client_support(
     from urllib.parse import parse_qs
 
     organization, portal_path = _portal_organization(organization_slug)
+    customer = _authenticated_customer(request, organization, organization_slug)
     organization_id = organization["id"]
 
     support_request = next(
         (
             item
-            for item in list_support_requests(_customer_id, organization_id)
+            for item in list_support_requests(customer["id"], organization_id)
             if item["id"] == request_id
         ),
         None,
@@ -242,11 +339,13 @@ async def rate_client_support(
 @router.post("/cliente/desbloqueio-confianca")
 @router.post("/portal/{organization_slug}/desbloqueio-confianca")
 async def portal_trust_unlock(
+    request: Request,
     organization_slug: str | None = None,
 ) -> RedirectResponse:
     organization, portal_path = _portal_organization(organization_slug)
+    customer = _authenticated_customer(request, organization, organization_slug)
     trust_unlock_account(
-        _customer_id,
+        customer["id"],
         organization_id=organization["id"],
     )
     return RedirectResponse(portal_path, status_code=303)
@@ -255,11 +354,13 @@ async def portal_trust_unlock(
 @router.post("/cliente/simular-pix")
 @router.post("/portal/{organization_slug}/simular-pix")
 async def portal_simulate_pix(
+    request: Request,
     organization_slug: str | None = None,
 ) -> RedirectResponse:
     organization, portal_path = _portal_organization(organization_slug)
+    customer = _authenticated_customer(request, organization, organization_slug)
     simulate_pix_account(
-        _customer_id,
+        customer["id"],
         organization_id=organization["id"],
     )
     return RedirectResponse(portal_path, status_code=303)
@@ -268,11 +369,13 @@ async def portal_simulate_pix(
 @router.post("/cliente/reiniciar")
 @router.post("/portal/{organization_slug}/reiniciar")
 async def portal_reset(
+    request: Request,
     organization_slug: str | None = None,
 ) -> RedirectResponse:
     organization, portal_path = _portal_organization(organization_slug)
+    customer = _authenticated_customer(request, organization, organization_slug)
     reset_simulated_account(
-        _customer_id,
+        customer["id"],
         organization_id=organization["id"],
     )
     return RedirectResponse(portal_path, status_code=303)

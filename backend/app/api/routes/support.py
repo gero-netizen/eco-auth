@@ -9,6 +9,7 @@ from app.api.routes.work_orders import create_simulated_work_order
 from app.api.routes.central_auth import require_central_roles
 from app.core.config import get_settings
 from app.core.organization_store import organization_store
+from app.core.portal_session import require_portal_customer
 from app.core.tenant_context import get_current_organization
 
 router = APIRouter(tags=["support-simulator"])
@@ -164,15 +165,27 @@ async def tenant_portal_create_support_request(
     organization = organization_store.get_active_by_slug(organization_slug)
     if organization is None:
         raise HTTPException(404, "organization_not_found")
+    try:
+        customer = require_portal_customer(request, organization["id"])
+    except HTTPException as error:
+        raise HTTPException(
+            303,
+            "portal_login_required",
+            headers={"Location": f"/portal/{organization_slug}/login"},
+        ) from error
     return await _create_portal_support_request(
         request,
         organization["id"],
         f"/portal/{organization_slug}",
+        customer["id"],
     )
 
 
 async def _create_portal_support_request(
-    request: Request, organization_id: str, redirect_path: str
+    request: Request,
+    organization_id: str,
+    redirect_path: str,
+    customer_id: str = "sim-customer-1",
 ) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     subject = fields.get("subject", [""])[0].strip()
@@ -180,7 +193,7 @@ async def _create_portal_support_request(
     if not 3 <= len(subject) <= 100 or not 5 <= len(description) <= 500:
         raise HTTPException(422, "invalid_support_request")
     create_support_request(
-        "sim-customer-1", subject, description, organization_id
+        customer_id, subject, description, organization_id
     )
     return RedirectResponse(redirect_path, status_code=303)
 
