@@ -1,9 +1,14 @@
 import asyncio
+import sqlite3
 
 from app.core.organization_store import OrganizationStore
 from app.core.technician_store import TechnicianStore
 from app.domain.models import WorkOrderStatus
 from app.integrations.mkauth.client import SimulatedMkAuthGateway
+from app.core.integration_config_store import (
+    IntegrationConfigStore,
+    TenantIntegrationSettings,
+)
 
 
 def test_technicians_are_isolated_by_organization(tmp_path) -> None:
@@ -68,3 +73,50 @@ async def _assert_work_order_isolation(tmp_path) -> None:
         assert error.args[0] == "work_order_not_found"
     else:
         raise AssertionError("cross-organization work order access was allowed")
+
+
+def test_integration_credentials_are_encrypted_and_isolated(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'saas-integrations.db'}"
+    store = IntegrationConfigStore(database_url)
+    first = TenantIntegrationSettings(
+        app_env="development",
+        mkauth_mode="real",
+        mkauth_base_url="https://mkauth.provedor-um.test",
+        mkauth_client_id="cliente-um",
+        mkauth_client_secret="segredo-um",
+        mkauth_verify_ssl=True,
+        mkauth_allow_http=False,
+        mkauth_writes_enabled=False,
+        routeros_mode="real",
+        routeros_host="10.0.0.1",
+        routeros_port=8728,
+        routeros_username="api-um",
+        routeros_password="senha-um",
+    )
+    second = TenantIntegrationSettings(
+        **{
+            **first.__dict__,
+            "mkauth_base_url": "https://mkauth.provedor-dois.test",
+            "mkauth_client_id": "cliente-dois",
+            "mkauth_client_secret": "segredo-dois",
+            "routeros_host": "10.0.0.2",
+            "routeros_username": "api-dois",
+            "routeros_password": "senha-dois",
+        }
+    )
+
+    store.save("provedor-um", first)
+    store.save("provedor-dois", second)
+
+    assert store.get("provedor-um").mkauth_client_id == "cliente-um"
+    assert store.get("provedor-dois").routeros_host == "10.0.0.2"
+    with sqlite3.connect(tmp_path / "saas-integrations.db") as connection:
+        stored = connection.execute(
+            """
+            SELECT mkauth_client_secret_encrypted, routeros_password_encrypted
+            FROM organization_integrations WHERE organization_id = ?
+            """,
+            ("provedor-um",),
+        ).fetchone()
+    assert "segredo-um" not in stored[0]
+    assert "senha-um" not in stored[1]

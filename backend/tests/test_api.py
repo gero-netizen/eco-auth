@@ -46,6 +46,16 @@ def test_central_session_is_scoped_to_default_organization() -> None:
     assert response.headers["location"] == "/central/login"
 
 
+def test_integration_summary_never_exposes_secrets() -> None:
+    response = client.get("/api/v1/saas/integrations/current")
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {"mkauth", "routeros"}
+    serialized = response.text.casefold()
+    assert "client_secret" not in serialized
+    assert "password" not in serialized
+
+
 def test_technician_api_requires_a_valid_login() -> None:
     anonymous = TestClient(app)
     assert anonymous.get("/api/v1/work-orders").status_code == 401

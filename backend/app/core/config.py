@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     default_organization_id: str = "g7-networks"
     default_organization_name: str = "G7 Networks"
     default_organization_slug: str = "g7-networks"
+    integration_encryption_key: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

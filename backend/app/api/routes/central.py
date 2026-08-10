@@ -17,6 +17,7 @@ from app.api.routes.network import list_active_alerts
 from app.api.routes.central_auth import require_central_session
 from app.core.technician_store import technician_store
 from app.core.config import get_settings
+from app.core.integration_config_store import get_integration_settings
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -49,7 +50,7 @@ async def central_dashboard(
     network_alerts = list_active_alerts()
     organization_id = session["organization"]["id"]
     technicians = technician_store.list_all(organization_id)
-    mkauth_settings = get_settings()
+    mkauth_settings = get_integration_settings()
     active_technicians = [item for item in technicians if item["active"]]
     technician_names = {item["id"]: item["name"] for item in technicians}
     technician_options = "".join(
@@ -1205,7 +1206,7 @@ async def central_confirm_mkauth_ticket_close(work_order_id: str) -> str:
 async def central_close_mkauth_ticket(
     work_order_id: str, request: Request
 ) -> RedirectResponse:
-    settings = get_settings()
+    settings = get_integration_settings()
     if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
         raise HTTPException(403, "mkauth_writes_disabled")
     fields = parse_qs((await request.body()).decode("utf-8"))

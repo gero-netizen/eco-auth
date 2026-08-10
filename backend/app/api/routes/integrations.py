@@ -13,6 +13,16 @@ from app.core.trust_unlock_store import TrustUnlockStore
 from app.api.routes.notifications import record_simulated_payment_message
 from app.integrations.mkauth.api_client import MkAuthApiClient
 from app.integrations.routeros.client import RouterOsReadOnlyClient
+from app.core.integration_config_store import get_integration_settings
+
+_base_settings_provider = get_settings
+
+
+def _tenant_integration_settings():
+    # Mantém os testes e utilitários antigos compatíveis, usando o cofre em produção.
+    if get_settings is not _base_settings_provider:
+        return get_settings()
+    return get_integration_settings()
 
 router = APIRouter(
     prefix="/integrations",
@@ -57,7 +67,7 @@ def _pix_simulation_store() -> PixSimulationStore:
 async def create_mkauth_pix_simulation(request: PixSimulationRequest) -> dict:
     if not request.confirmed:
         return {"status": "confirmation_required"}
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode != "real":
         return {"status": "integration_unavailable"}
     try:
@@ -102,7 +112,7 @@ async def list_mkauth_pix_simulations() -> dict:
 
 @router.post("/mkauth/pix-payments")
 async def create_mkauth_pix_payment(request: PixRealPaymentRequest) -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if not request.confirmed or request.confirmation_text.strip().upper() != "BAIXAR":
         return {"status": "confirmation_required"}
     if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
@@ -175,7 +185,7 @@ async def create_mkauth_pix_payment(request: PixRealPaymentRequest) -> dict:
 
 @router.post("/mkauth/trust-unlock")
 async def create_mkauth_trust_unlock(request: TrustUnlockRequest) -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if not request.confirmed:
         return {"status": "confirmation_required"}
     if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
@@ -223,7 +233,7 @@ async def cancel_mkauth_trust_unlock(
     record_id: str,
     request: TrustUnlockCancelRequest,
 ) -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if not request.confirmed:
         return {"status": "confirmation_required"}
     if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
@@ -252,7 +262,7 @@ async def cancel_mkauth_trust_unlock(
 
 
 async def reconcile_expired_trust_unlocks() -> int:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
         return 0
     store = _trust_unlock_store()
@@ -279,7 +289,7 @@ async def reconcile_expired_trust_unlocks() -> int:
 
 @router.get("/routeros/diagnostic")
 async def diagnose_routeros() -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.routeros_mode != "real":
         return {"status": "simulated", "read_only": True, "message": "RouterOS real is disabled"}
     if not settings.routeros_username or not settings.routeros_password:
@@ -332,7 +342,7 @@ async def diagnose_routeros() -> dict:
 
 @router.get("/mkauth/probe")
 async def probe_mkauth() -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode == "simulated":
         return {
             "status": "simulated",
@@ -388,7 +398,7 @@ async def probe_mkauth() -> dict:
 
 @router.get("/mkauth/plans")
 async def list_mkauth_plans() -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode != "real":
         return {"status": "simulated", "read_only": True, "plans": []}
     try:
@@ -429,7 +439,7 @@ async def list_mkauth_plans() -> dict:
 
 @router.get("/mkauth/clients")
 async def list_mkauth_clients() -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode != "real":
         return {"status": "simulated", "read_only": True, "clients": []}
     try:
@@ -493,7 +503,7 @@ async def list_mkauth_clients() -> dict:
 async def get_mkauth_client_details(
     login: str = Query(min_length=1, max_length=64),
 ) -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode != "real":
         return {"status": "simulated", "read_only": True, "client": None}
     try:
@@ -534,7 +544,7 @@ async def get_mkauth_client_details(
 
 @router.get("/mkauth/additional-clients")
 async def list_mkauth_additional_clients() -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode != "real":
         return {"status": "simulated", "read_only": True, "additional_clients": []}
     try:
@@ -599,7 +609,7 @@ async def list_mkauth_additional_clients() -> dict:
 async def list_mkauth_titles(
     login: str | None = None,
 ) -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode != "real":
         return {"status": "simulated", "read_only": True, "titles": []}
     try:
@@ -663,7 +673,7 @@ async def list_mkauth_titles(
 
 @router.get("/mkauth/tickets")
 async def list_mkauth_tickets() -> dict:
-    settings = get_settings()
+    settings = _tenant_integration_settings()
     if settings.mkauth_mode != "real":
         return {"status": "simulated", "read_only": True, "tickets": []}
     try:
