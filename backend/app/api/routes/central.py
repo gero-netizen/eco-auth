@@ -24,6 +24,7 @@ from app.core.audit_store import audit_store
 from app.core.technician_store import technician_store
 from app.core.config import get_settings
 from app.core.integration_config_store import get_integration_settings
+from app.core.subscription_store import SAAS_PLANS, subscription_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -217,8 +218,9 @@ async def central_dashboard(
           <button type="submit">CADASTRAR</button>
         </form>"""
     can_manage_users = current_user["role"] in {"owner", "admin"}
+    all_central_users = central_user_store.list_all(organization_id)
     central_users = (
-        central_user_store.list_all(organization_id)
+        all_central_users
         if can_manage_users
         else [current_user]
     )
@@ -260,6 +262,39 @@ async def central_dashboard(
             f"<label>Perfil<select name='role' required>{role_options}</select></label>"
             "<button type='submit'>CADASTRAR</button></form>"
         )
+    subscription = subscription_store.get_or_create(organization_id)
+    subscription_plan = subscription["plan"]
+    active_user_count = sum(bool(item["active"]) for item in all_central_users)
+    active_technician_count = sum(bool(item["active"]) for item in technicians)
+    subscription_status_labels = {
+        "trialing": "Período de teste",
+        "active": "Ativa",
+        "past_due": "Pagamento pendente",
+        "canceled": "Cancelada",
+        "trial_expired": "Período de teste encerrado",
+    }
+    plan_options = "".join(
+        f"<option value='{escape(code)}' {'selected' if code == subscription['plan_code'] else ''}>"
+        f"{escape(plan['name'])} — R$ {plan['monthly_price']:.2f}/mês</option>"
+        for code, plan in SAAS_PLANS.items()
+    )
+    plan_change_form = (
+        "<form method='post' action='/central/subscription/simulate-plan'>"
+        f"<label>Simular plano<select name='plan_code'>{plan_options}</select></label>"
+        "<button type='submit'>APLICAR NA BANCADA</button></form>"
+        if current_user["role"] == "owner"
+        else ""
+    )
+    subscription_panel = (
+        "<section class='module-panel' data-module='subscription'><h2>Plano e assinatura</h2>"
+        "<p><b>Ambiente de bancada:</b> nenhuma cobrança real será realizada nesta etapa.</p>"
+        f"<p><b>Plano:</b> {escape(subscription_plan['name'])} — R$ {subscription_plan['monthly_price']:.2f}/mês</p>"
+        f"<p><b>Situação:</b> {escape(subscription_status_labels.get(subscription['status'], subscription['status']))}</p>"
+        f"<p><b>Fim do teste:</b> {escape(subscription['trial_ends_at'] or '-')}</p>"
+        f"<p><b>Usuários da central:</b> {active_user_count}/{subscription_plan['max_central_users']}</p>"
+        f"<p><b>Técnicos:</b> {active_technician_count}/{subscription_plan['max_technicians']}</p>"
+        f"{plan_change_form}</section>"
+    )
     audit_rows = ""
     if can_manage_users:
         action_labels = {
@@ -363,6 +398,7 @@ async def central_dashboard(
         <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
         <button class="menu-button" type="button" data-target="technicians">Técnicos</button>
         <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
+        <button class="menu-button" type="button" data-target="subscription">Plano e assinatura</button>
         {audit_menu}
         <button class="menu-button" type="button" data-target="network">Monitoramento da rede</button>
         <button class="menu-button" type="button" data-target="routeros-diagnostic">Diagnóstico PPPoE/RADIUS</button>
@@ -496,6 +532,7 @@ async def central_dashboard(
         {central_user_form}
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{central_user_rows}</tbody></table>
       </section>
+      {subscription_panel}
       {audit_panel}
       <section class="module-panel" data-module="network"><h2>Monitoramento da rede</h2>
         <p class="alert"><b>{len(network_alerts)} ocorrência(s) ativa(s)</b></p>
@@ -1356,9 +1393,17 @@ async def central_create_technician(
     password = fields.get("password", [""])[0]
     if len(name) < 3 or len(username) < 3 or len(password) < 8:
         raise HTTPException(422, "invalid_technician_data")
+    organization_id = session["organization"]["id"]
+    active_technicians = sum(
+        bool(item["active"])
+        for item in technician_store.list_all(organization_id)
+    )
     try:
+        subscription_store.ensure_capacity(
+            organization_id, "technicians", active_technicians
+        )
         technician_store.create(
-            name, username, password, session["organization"]["id"]
+            name, username, password, organization_id
         )
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
@@ -1384,13 +1429,54 @@ async def central_create_user(
         raise HTTPException(422, "invalid_central_user_data")
     if session["user"]["role"] == "admin" and role == "owner":
         raise HTTPException(403, "only_owner_can_create_owner")
+    organization_id = session["organization"]["id"]
+    active_users = sum(
+        bool(item["active"])
+        for item in central_user_store.list_all(organization_id)
+    )
     try:
+        subscription_store.ensure_capacity(
+            organization_id, "central_users", active_users
+        )
         central_user_store.create(
-            session["organization"]["id"], name, username, password, role
+            organization_id, name, username, password, role
         )
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     return RedirectResponse("/central#central-users", status_code=303)
+
+
+@router.post("/central/subscription/simulate-plan", include_in_schema=False)
+async def central_simulate_plan_change(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    plan_code = fields.get("plan_code", [""])[0]
+    try:
+        plan = SAAS_PLANS.get(plan_code)
+        if plan is None:
+            raise ValueError("invalid_saas_plan")
+        organization_id = session["organization"]["id"]
+        active_users = sum(
+            bool(item["active"])
+            for item in central_user_store.list_all(organization_id)
+        )
+        active_technicians = sum(
+            bool(item["active"])
+            for item in technician_store.list_all(organization_id)
+        )
+        if (
+            active_users > plan["max_central_users"]
+            or active_technicians > plan["max_technicians"]
+        ):
+            raise ValueError("saas_plan_below_current_usage")
+        subscription_store.simulate_plan_change(
+            organization_id, plan_code
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return RedirectResponse("/central#subscription", status_code=303)
 
 
 @router.post("/central/users/{user_id}/toggle", include_in_schema=False)
@@ -1416,6 +1502,17 @@ async def central_toggle_user(
         raise HTTPException(403, "admin_cannot_manage_owner")
     fields = parse_qs((await request.body()).decode("utf-8"))
     active = fields.get("active", ["0"])[0] == "1"
+    if active and not target["active"]:
+        active_users = sum(
+            bool(item["active"])
+            for item in central_user_store.list_all(organization_id)
+        )
+        try:
+            subscription_store.ensure_capacity(
+                organization_id, "central_users", active_users
+            )
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
     central_user_store.set_active(user_id, organization_id, active)
     return RedirectResponse("/central#central-users", status_code=303)
 
@@ -1576,9 +1673,24 @@ async def central_toggle_technician(
 ) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     active = fields.get("active", ["0"])[0] == "1"
+    organization_id = session["organization"]["id"]
+    technicians = technician_store.list_all(organization_id)
+    target = next(
+        (item for item in technicians if item["id"] == technician_id), None
+    )
+    if target is None:
+        raise HTTPException(404, "technician_not_found")
+    if active and not target["active"]:
+        active_technicians = sum(bool(item["active"]) for item in technicians)
+        try:
+            subscription_store.ensure_capacity(
+                organization_id, "technicians", active_technicians
+            )
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
     try:
         technician_store.set_active(
-            technician_id, active, session["organization"]["id"]
+            technician_id, active, organization_id
         )
     except KeyError as error:
         raise HTTPException(404, str(error)) from error

@@ -11,6 +11,7 @@ from app.core.integration_config_store import (
 )
 from app.core.central_user_store import CentralUserStore
 from app.core.audit_store import AuditStore
+from app.core.subscription_store import SubscriptionStore
 
 
 def test_technicians_are_isolated_by_organization(tmp_path) -> None:
@@ -156,3 +157,20 @@ def test_audit_events_are_isolated_by_organization(tmp_path) -> None:
     assert [item["id"] for item in store.list_recent("provedor-um")] == [first["id"]]
     assert [item["id"] for item in store.list_recent("provedor-dois")] == [second["id"]]
     assert store.get(second["id"], "provedor-um") is None
+
+
+def test_subscriptions_and_limits_are_isolated_by_organization(tmp_path) -> None:
+    store = SubscriptionStore(f"sqlite:///{tmp_path / 'saas-subscriptions.db'}")
+    first = store.get_or_create("provedor-um")
+    second = store.simulate_plan_change("provedor-dois", "starter")
+
+    assert first["plan_code"] == "professional"
+    assert second["plan_code"] == "starter"
+    assert store.get_or_create("provedor-um")["plan_code"] == "professional"
+    store.ensure_capacity("provedor-dois", "central_users", 2)
+    try:
+        store.ensure_capacity("provedor-dois", "central_users", 3)
+    except ValueError as error:
+        assert str(error) == "saas_central_users_limit_reached"
+    else:
+        raise AssertionError("subscription user limit was not enforced")

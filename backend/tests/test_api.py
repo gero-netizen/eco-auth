@@ -73,6 +73,17 @@ def test_owner_can_view_tenant_audit_events() -> None:
     assert "Auditoria" in dashboard.text
 
 
+def test_current_subscription_is_scoped_and_visible() -> None:
+    response = client.get("/api/v1/saas/subscription/current")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["organization_id"] == "g7-networks"
+    assert payload["plan_code"] in {"starter", "professional", "scale"}
+    assert payload["status"] in {"trialing", "active", "past_due", "canceled"}
+    dashboard = client.get("/central")
+    assert "Plano e assinatura" in dashboard.text
+
+
 def test_viewer_cannot_manage_central_users() -> None:
     username = f"viewer-{uuid4()}"
     created = client.post(
@@ -224,8 +235,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert response.status_code == 200
     assert "Painel da Central" in response.text
     assert "MODO SIMULADO" in response.text
-    assert response.text.count('class="menu-button') == 19
-    assert response.text.count('data-module=') == 19
+    assert response.text.count('class="menu-button') == 20
+    assert response.text.count('data-module=') == 20
     assert "Auditoria" in response.text
     assert "Usuários da central" in response.text
     assert "central-users" in response.text
