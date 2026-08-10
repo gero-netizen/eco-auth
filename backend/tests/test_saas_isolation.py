@@ -430,9 +430,18 @@ def test_portal_customers_are_isolated_by_organization(tmp_path) -> None:
 
 def test_portal_customer_management_stays_inside_organization(tmp_path) -> None:
     store = PortalCustomerStore(f"sqlite:///{tmp_path / 'portal-management.db'}")
-    created = store.create("provider-1", "Maria Cliente", "maria", "Senha@2026")
+    created = store.create(
+        "provider-1",
+        "Maria Cliente",
+        "maria",
+        "Senha@2026",
+        "mk-customer-1",
+        "pppoe-maria",
+    )
 
     assert store.authenticate("provider-1", "maria", "Senha@2026") is not None
+    assert created["external_customer_id"] == "mk-customer-1"
+    assert created["external_login"] == "pppoe-maria"
     assert store.authenticate("provider-2", "maria", "Senha@2026") is None
     assert store.list_all("provider-2") == []
 
@@ -441,3 +450,8 @@ def test_portal_customer_management_stays_inside_organization(tmp_path) -> None:
     store.reset_password("provider-1", created["id"], "NovaSenha@2026")
     store.set_active("provider-1", created["id"], True)
     assert store.authenticate("provider-1", "maria", "NovaSenha@2026") is not None
+    store.set_external_customer(
+        "provider-1", created["id"], "mk-customer-2", "pppoe-maria-novo"
+    )
+    updated = store.authenticate("provider-1", "maria", "NovaSenha@2026")
+    assert updated["external_customer_id"] == "mk-customer-2"

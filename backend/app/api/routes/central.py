@@ -276,6 +276,8 @@ async def central_dashboard(
     portal_customers = portal_customer_store.list_all(organization_id)
     portal_customer_rows = "".join(
         f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
+        f"<td>{escape(item['external_login'] or 'Não vinculado')}</td>"
+        f"<td>{escape(item['external_customer_id'] or '-')}</td>"
         f"<td>{'Ativo' if item['active'] else 'Inativo'}</td><td>"
         + (
             f"<form method='post' action='/central/portal-customers/{escape(item['id'])}/toggle'>"
@@ -285,10 +287,14 @@ async def central_dashboard(
             f"<form method='post' action='/central/portal-customers/{escape(item['id'])}/password'>"
             "<input name='password' type='password' minlength='8' maxlength='200' placeholder='Nova senha' required>"
             "<button type='submit'>REDEFINIR SENHA</button></form>"
+            f"<form method='post' action='/central/portal-customers/{escape(item['id'])}/link'>"
+            f"<input name='external_login' value='{escape(item['external_login'] or '')}' placeholder='Login MK-AUTH' required>"
+            f"<input name='external_customer_id' value='{escape(item['external_customer_id'] or '')}' placeholder='Identificador MK-AUTH' required>"
+            "<button type='submit'>VINCULAR</button></form>"
             if can_manage_users else "-"
         ) + "</td></tr>"
         for item in portal_customers
-    ) or "<tr><td colspan='4'>Nenhum cliente cadastrado.</td></tr>"
+    ) or "<tr><td colspan='6'>Nenhum cliente cadastrado.</td></tr>"
     portal_customer_form = ""
     if can_manage_users:
         portal_customer_form = (
@@ -296,6 +302,8 @@ async def central_dashboard(
             "<label>Nome<input name='name' minlength='3' maxlength='100' required></label>"
             "<label>Usuário<input name='username' minlength='3' maxlength='80' required></label>"
             "<label>Senha inicial<input name='password' type='password' minlength='8' maxlength='200' required></label>"
+            "<label>Login MK-AUTH<input name='external_login' minlength='1' maxlength='100' required></label>"
+            "<label>Identificador MK-AUTH<input name='external_customer_id' minlength='1' maxlength='100' required></label>"
             "<button type='submit'>CADASTRAR</button></form>"
         )
     subscription = subscription_store.get_or_create(organization_id)
@@ -573,7 +581,7 @@ async def central_dashboard(
         <h2>Clientes do portal</h2>
         <p>Contas que acessam o portal deste provedor. Senhas nunca são exibidas.</p>
         {portal_customer_form}
-        <table><thead><tr><th>Nome</th><th>Usuário</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{portal_customer_rows}</tbody></table>
+        <table><thead><tr><th>Nome</th><th>Usuário</th><th>Login MK-AUTH</th><th>Identificador MK-AUTH</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{portal_customer_rows}</tbody></table>
       </section>
       {subscription_panel}
       {audit_panel}
@@ -1498,12 +1506,52 @@ async def central_create_portal_customer(
     name = fields.get("name", [""])[0].strip()
     username = fields.get("username", [""])[0].strip().casefold()
     password = fields.get("password", [""])[0]
-    if len(name) < 3 or len(username) < 3 or len(password) < 8:
+    external_login = fields.get("external_login", [""])[0].strip()
+    external_customer_id = fields.get("external_customer_id", [""])[0].strip()
+    if (
+        len(name) < 3
+        or len(username) < 3
+        or len(password) < 8
+        or not external_login
+        or not external_customer_id
+    ):
         raise HTTPException(422, "invalid_portal_customer_data")
     try:
         portal_customer_store.create(
-            session["organization"]["id"], name, username, password
+            session["organization"]["id"],
+            name,
+            username,
+            password,
+            external_customer_id,
+            external_login,
         )
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return RedirectResponse("/central#portal-customers", status_code=303)
+
+
+@router.post(
+    "/central/portal-customers/{customer_id}/link", include_in_schema=False
+)
+async def central_link_portal_customer(
+    customer_id: str,
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    external_login = fields.get("external_login", [""])[0].strip()
+    external_customer_id = fields.get("external_customer_id", [""])[0].strip()
+    if not external_login or not external_customer_id:
+        raise HTTPException(422, "invalid_portal_customer_link")
+    try:
+        portal_customer_store.set_external_customer(
+            session["organization"]["id"],
+            customer_id,
+            external_customer_id,
+            external_login,
+        )
+    except KeyError as error:
+        raise HTTPException(404, str(error)) from error
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     return RedirectResponse("/central#portal-customers", status_code=303)
