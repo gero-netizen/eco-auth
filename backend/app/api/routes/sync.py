@@ -21,11 +21,14 @@ _operation_store = SyncOperationStore(get_settings().database_url)
 
 
 @router.post("/push", response_model=SyncPushResponse)
-async def push(request: SyncPushRequest) -> SyncPushResponse:
+async def push(
+    request: SyncPushRequest,
+    technician: dict = Depends(require_technician),
+) -> SyncPushResponse:
     results: list[OperationResult] = []
     for operation in request.operations:
         key = str(operation.operation_id)
-        result = _operation_store.get(key)
+        result = _operation_store.get(key, technician["organization_id"])
         if result is None:
             change = None
             try:
@@ -34,6 +37,7 @@ async def push(request: SyncPushRequest) -> SyncPushResponse:
                         operation.entity_id,
                         WorkOrderStatus(operation.payload["to_status"]),
                         operation.base_version,
+                        technician["organization_id"],
                     )
                     server_version = updated.version
                     change = {
@@ -52,6 +56,7 @@ async def push(request: SyncPushRequest) -> SyncPushResponse:
                         operation.base_version,
                         str(operation.operation_id),
                         operation.payload.get("work_order_id"),
+                        technician["organization_id"],
                     )
                     server_version = updated_item.version
                     change = {
@@ -77,6 +82,7 @@ async def push(request: SyncPushRequest) -> SyncPushResponse:
             result = _operation_store.save(
                 result,
                 change if result.status == "accepted" else None,
+                technician["organization_id"],
             )
         else:
             result = result.model_copy(update={"status": "duplicate"})
@@ -85,12 +91,17 @@ async def push(request: SyncPushRequest) -> SyncPushResponse:
 
 
 @router.get("/pull")
-async def pull(cursor: str | None = None) -> dict:
+async def pull(
+    cursor: str | None = None,
+    technician: dict = Depends(require_technician),
+) -> dict:
     try:
         parsed_cursor = int(cursor) if cursor else 0
         if parsed_cursor < 0:
             raise ValueError
     except ValueError as error:
         raise HTTPException(status_code=422, detail="invalid_sync_cursor") from error
-    changes, next_cursor = _operation_store.changes_after(parsed_cursor)
+    changes, next_cursor = _operation_store.changes_after(
+        parsed_cursor, organization_id=technician["organization_id"]
+    )
     return {"changes": changes, "next_cursor": str(next_cursor)}

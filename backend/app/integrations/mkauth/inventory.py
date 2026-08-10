@@ -4,52 +4,17 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.core.config import get_settings
+from app.core.tenant_context import get_current_organization
 from app.domain.models import InventoryItem
 
 
 class SimulatedInventoryGateway:
-    def __init__(self) -> None:
+    def __init__(self, database_url: str | None = None) -> None:
         self._database_path = Path(
-            get_settings().database_url.removeprefix("sqlite:///")
+            (database_url or get_settings().database_url).removeprefix("sqlite:///")
         )
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS simulated_inventory (
-                    id TEXT PRIMARY KEY,
-                    sku TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    quantity REAL NOT NULL,
-                    unit TEXT NOT NULL,
-                    serial_number TEXT,
-                    version INTEGER NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS simulated_inventory_movements (
-                    id TEXT PRIMARY KEY,
-                    item_id TEXT NOT NULL,
-                    work_order_id TEXT,
-                    kind TEXT NOT NULL,
-                    quantity REAL NOT NULL,
-                    source TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
-            for item in self._seed_items():
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO simulated_inventory (
-                        id, sku, description, quantity, unit,
-                        serial_number, version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    self._values(item),
-                )
+        self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database_path, timeout=10)
@@ -57,68 +22,154 @@ class SimulatedInventoryGateway:
         connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            inventory_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(simulated_inventory)")
+            }
+            if inventory_columns and "organization_id" not in inventory_columns:
+                connection.execute(
+                    "ALTER TABLE simulated_inventory RENAME TO simulated_inventory_legacy"
+                )
+            movement_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(simulated_inventory_movements)"
+                )
+            }
+            if movement_columns and "organization_id" not in movement_columns:
+                connection.execute(
+                    "ALTER TABLE simulated_inventory_movements "
+                    "RENAME TO simulated_inventory_movements_legacy"
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simulated_inventory (
+                    organization_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    sku TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    unit TEXT NOT NULL,
+                    serial_number TEXT,
+                    version INTEGER NOT NULL,
+                    PRIMARY KEY (organization_id, id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simulated_inventory_movements (
+                    organization_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    work_order_id TEXT,
+                    kind TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (organization_id, id)
+                )
+                """
+            )
+            if inventory_columns and "organization_id" not in inventory_columns:
+                connection.execute(
+                    """
+                    INSERT INTO simulated_inventory (
+                        organization_id, id, sku, description, quantity,
+                        unit, serial_number, version
+                    )
+                    SELECT ?, id, sku, description, quantity, unit,
+                           serial_number, version
+                    FROM simulated_inventory_legacy
+                    """,
+                    (get_settings().default_organization_id,),
+                )
+                connection.execute("DROP TABLE simulated_inventory_legacy")
+            if movement_columns and "organization_id" not in movement_columns:
+                connection.execute(
+                    """
+                    INSERT INTO simulated_inventory_movements (
+                        organization_id, id, item_id, work_order_id, kind,
+                        quantity, source, created_at
+                    )
+                    SELECT ?, id, item_id, work_order_id, kind, quantity,
+                           source, created_at
+                    FROM simulated_inventory_movements_legacy
+                    """,
+                    (get_settings().default_organization_id,),
+                )
+                connection.execute("DROP TABLE simulated_inventory_movements_legacy")
+            for item in self._seed_items():
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO simulated_inventory (
+                        organization_id, id, sku, description, quantity,
+                        unit, serial_number, version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        get_settings().default_organization_id,
+                        *self._values(item),
+                    ),
+                )
+
     @staticmethod
     def _seed_items() -> list[InventoryItem]:
         return [
             InventoryItem(
-                id="drop-cable",
-                sku="CABO-DROP-01",
-                description="Cabo drop óptico",
-                quantity=100.0,
-                unit="m",
+                id="drop-cable", sku="CABO-DROP-01",
+                description="Cabo drop óptico", quantity=100.0, unit="m",
             ),
             InventoryItem(
-                id="fast-connector",
-                sku="CONECTOR-FAST",
-                description="Conector de campo",
-                quantity=20.0,
-                unit="un",
+                id="fast-connector", sku="CONECTOR-FAST",
+                description="Conector de campo", quantity=20.0, unit="un",
             ),
             InventoryItem(
-                id="router-bench-01",
-                sku="ROTEADOR-AC",
-                description="Roteador Wi-Fi de bancada",
-                quantity=1.0,
-                unit="un",
-                serial_number="RTR-BENCH-001",
+                id="router-bench-01", sku="ROTEADOR-AC",
+                description="Roteador Wi-Fi de bancada", quantity=1.0,
+                unit="un", serial_number="RTR-BENCH-001",
             ),
         ]
 
     @staticmethod
     def _values(item: InventoryItem) -> tuple:
         return (
-            item.id,
-            item.sku,
-            item.description,
-            item.quantity,
-            item.unit,
-            item.serial_number,
-            item.version,
+            item.id, item.sku, item.description, item.quantity, item.unit,
+            item.serial_number, item.version,
         )
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> InventoryItem:
         return InventoryItem(
-            id=row["id"],
-            sku=row["sku"],
-            description=row["description"],
-            quantity=row["quantity"],
-            unit=row["unit"],
-            serial_number=row["serial_number"],
-            version=row["version"],
+            id=row["id"], sku=row["sku"], description=row["description"],
+            quantity=row["quantity"], unit=row["unit"],
+            serial_number=row["serial_number"], version=row["version"],
         )
 
-    async def list_items(self, technician_id: str) -> list[InventoryItem]:
+    async def list_items(
+        self, technician_id: str, organization_id: str | None = None
+    ) -> list[InventoryItem]:
+        current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM simulated_inventory ORDER BY description"
+                """
+                SELECT * FROM simulated_inventory
+                WHERE organization_id = ? ORDER BY description
+                """,
+                (current_organization_id,),
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    async def _item(self, item_id: str) -> InventoryItem:
+    async def _item(self, item_id: str, organization_id: str) -> InventoryItem:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM simulated_inventory WHERE id = ?", (item_id,)
+                """
+                SELECT * FROM simulated_inventory
+                WHERE id = ? AND organization_id = ?
+                """,
+                (item_id, organization_id),
             ).fetchone()
         if row is None:
             raise KeyError("inventory_item_not_found")
@@ -131,30 +182,36 @@ class SimulatedInventoryGateway:
         base_version: int | None,
         movement_id: str | None = None,
         work_order_id: str | None = None,
+        organization_id: str | None = None,
     ) -> InventoryItem:
-        item = await self._item(item_id)
+        current_organization_id = organization_id or get_current_organization()
+        item = await self._item(item_id, current_organization_id)
         if base_version is not None and base_version != item.version:
             raise ValueError("version_conflict")
         if quantity <= 0 or quantity > item.quantity:
             raise ValueError("insufficient_stock")
-        updated = await self._set_quantity(item, item.quantity - quantity)
+        updated = await self._set_quantity(
+            item, item.quantity - quantity, current_organization_id
+        )
         self.record_movement(
-            movement_id or str(uuid4()),
-            item_id,
-            work_order_id,
-            "consume",
-            quantity,
-            "technician",
+            movement_id or str(uuid4()), item_id, work_order_id, "consume",
+            quantity, "technician", current_organization_id,
         )
         return updated
 
-    async def restock(self, item_id: str, quantity: float) -> InventoryItem:
+    async def restock(
+        self, item_id: str, quantity: float, organization_id: str | None = None
+    ) -> InventoryItem:
+        current_organization_id = organization_id or get_current_organization()
         if quantity <= 0:
             raise ValueError("invalid_restock_quantity")
-        item = await self._item(item_id)
-        updated = await self._set_quantity(item, item.quantity + quantity)
+        item = await self._item(item_id, current_organization_id)
+        updated = await self._set_quantity(
+            item, item.quantity + quantity, current_organization_id
+        )
         self.record_movement(
-            str(uuid4()), item_id, None, "restock", quantity, "central"
+            str(uuid4()), item_id, None, "restock", quantity, "central",
+            current_organization_id,
         )
         return updated
 
@@ -166,42 +223,48 @@ class SimulatedInventoryGateway:
         kind: str,
         quantity: float,
         source: str,
+        organization_id: str | None = None,
     ) -> None:
+        current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO simulated_inventory_movements (
-                    id, item_id, work_order_id, kind, quantity, source, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    organization_id, id, item_id, work_order_id, kind,
+                    quantity, source, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    movement_id,
-                    item_id,
-                    work_order_id,
-                    kind,
-                    quantity,
-                    source,
+                    current_organization_id, movement_id, item_id,
+                    work_order_id, kind, quantity, source,
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
 
-    def list_movements(self, work_order_id: str | None = None) -> list[dict]:
+    def list_movements(
+        self, work_order_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> list[dict]:
+        current_organization_id = organization_id or get_current_organization()
         query = """
             SELECT movement.*, item.description, item.unit
             FROM simulated_inventory_movements movement
-            JOIN simulated_inventory item ON item.id = movement.item_id
+            JOIN simulated_inventory item
+              ON item.id = movement.item_id
+             AND item.organization_id = movement.organization_id
+            WHERE movement.organization_id = ?
         """
-        parameters: tuple = ()
+        parameters: tuple = (current_organization_id,)
         if work_order_id is not None:
-            query += " WHERE movement.work_order_id = ?"
-            parameters = (work_order_id,)
+            query += " AND movement.work_order_id = ?"
+            parameters = (current_organization_id, work_order_id)
         query += " ORDER BY movement.created_at DESC"
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
         return [dict(row) for row in rows]
 
     async def _set_quantity(
-        self, item: InventoryItem, quantity: float
+        self, item: InventoryItem, quantity: float, organization_id: str
     ) -> InventoryItem:
         updated = item.model_copy(
             update={"quantity": quantity, "version": item.version + 1}
@@ -209,10 +272,10 @@ class SimulatedInventoryGateway:
         with self._connect() as connection:
             connection.execute(
                 """
-                UPDATE simulated_inventory
-                SET quantity = ?, version = ? WHERE id = ?
+                UPDATE simulated_inventory SET quantity = ?, version = ?
+                WHERE id = ? AND organization_id = ?
                 """,
-                (updated.quantity, updated.version, updated.id),
+                (updated.quantity, updated.version, updated.id, organization_id),
             )
         return updated
 

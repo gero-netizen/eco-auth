@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from uuid import uuid4
 
 from app.core.organization_store import OrganizationStore
 from app.core.technician_store import TechnicianStore
@@ -12,6 +13,10 @@ from app.core.integration_config_store import (
 from app.core.central_user_store import CentralUserStore
 from app.core.audit_store import AuditStore
 from app.core.subscription_store import SubscriptionStore
+from app.core.config import get_settings
+from app.integrations.mkauth.inventory import SimulatedInventoryGateway
+from app.core.sync_store import SyncOperationStore
+from app.domain.models import OperationResult
 
 
 def test_technicians_are_isolated_by_organization(tmp_path) -> None:
@@ -50,6 +55,44 @@ def test_organization_can_be_deactivated_without_affecting_another(tmp_path) -> 
     assert organizations.get_active(first["id"]) is None
     assert organizations.get(first["id"])["active"] == 0
     assert organizations.get_active(second["id"])["id"] == second["id"]
+
+
+def test_inventory_is_isolated_by_organization(tmp_path) -> None:
+    gateway = SimulatedInventoryGateway(f"sqlite:///{tmp_path / 'inventory.db'}")
+    default_id = get_settings().default_organization_id
+
+    default_items = asyncio.run(gateway.list_items("tech-1", default_id))
+    other_items = asyncio.run(gateway.list_items("tech-2", "provedor-dois"))
+
+    assert len(default_items) == 3
+    assert other_items == []
+    before = next(item for item in default_items if item.id == "fast-connector")
+    asyncio.run(
+        gateway.consume(
+            "fast-connector", 1, before.version, organization_id=default_id
+        )
+    )
+    assert asyncio.run(gateway.list_items("tech-2", "provedor-dois")) == []
+
+
+def test_mobile_sync_journal_is_isolated_by_organization(tmp_path) -> None:
+    store = SyncOperationStore(f"sqlite:///{tmp_path / 'sync-isolation.db'}")
+    operation_id = uuid4()
+    result = OperationResult(
+        operation_id=operation_id, status="accepted", server_version=1
+    )
+    change = {
+        "entity_type": "inventory_item",
+        "entity_id": "item-1",
+        "kind": "upsert",
+        "payload": {"id": "item-1"},
+    }
+    store.save(result, change, "provedor-um")
+
+    assert store.get(str(operation_id), "provedor-um") is not None
+    assert store.get(str(operation_id), "provedor-dois") is None
+    assert len(store.changes_after(0, organization_id="provedor-um")[0]) == 1
+    assert store.changes_after(0, organization_id="provedor-dois")[0] == []
 
 
 def test_work_orders_are_isolated_by_organization(tmp_path) -> None:

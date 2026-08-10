@@ -46,7 +46,7 @@ def _valid_token(token: str) -> dict | None:
         return False
 
 
-def require_technician(
+async def require_technician(
     authorization: str | None = Header(default=None),
 ) -> dict:
     scheme, _, token = (authorization or "").partition(" ")

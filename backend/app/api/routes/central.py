@@ -55,15 +55,11 @@ async def central_dashboard(
     is_default_organization = (
         organization_id == get_settings().default_organization_id
     )
-    inventory = (
-        await simulated_inventory_gateway.list_items("bench-technician")
-        if is_default_organization
-        else []
+    inventory = await simulated_inventory_gateway.list_items(
+        "bench-technician", organization_id
     )
-    inventory_movements = (
-        simulated_inventory_gateway.list_movements()
-        if is_default_organization
-        else []
+    inventory_movements = simulated_inventory_gateway.list_movements(
+        organization_id=organization_id
     )
     provisioning = (
         provisioning_store.list_for_work_order("sim-os-1")
@@ -1753,7 +1749,10 @@ async def central_evidence_gallery(work_order_id: str) -> str:
 
 
 @router.get("/central/work-orders/{work_order_id}/report", response_class=HTMLResponse)
-async def central_work_order_report(work_order_id: str) -> str:
+async def central_work_order_report(
+    work_order_id: str,
+    session: dict = Depends(require_central_session),
+) -> str:
     orders = await simulated_mkauth_gateway.list_work_orders(None)
     order = next((item for item in orders if item.id == work_order_id), None)
     if order is None:
@@ -1761,7 +1760,9 @@ async def central_work_order_report(work_order_id: str) -> str:
     files = list_evidence(work_order_id)
     equipment = list_equipment(work_order_id)
     provisioning = provisioning_store.list_for_work_order(work_order_id)
-    material_movements = simulated_inventory_gateway.list_movements(work_order_id)
+    material_movements = simulated_inventory_gateway.list_movements(
+        work_order_id, session["organization"]["id"]
+    )
     photos = [item for item in files if item["category"] == "installation_photo"]
     signatures = [item for item in files if item["category"] == "customer_signature"]
     checklist = (
