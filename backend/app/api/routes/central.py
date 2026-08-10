@@ -10,8 +10,8 @@ from app.api.routes.evidence import list_equipment, list_evidence
 from app.api.routes.olt import provisioning_store
 from app.integrations.mkauth.client import simulated_mkauth_gateway
 from app.integrations.mkauth.inventory import simulated_inventory_gateway
-from app.api.routes.financial import simulated_financial_accounts
-from app.api.routes.notifications import simulated_messages
+from app.api.routes.financial import list_financial_accounts
+from app.api.routes.notifications import list_simulated_messages
 from app.api.routes.support import list_support_requests
 from app.api.routes.network import list_active_alerts
 from app.api.routes.central_auth import (
@@ -66,18 +66,10 @@ async def central_dashboard(
         if is_default_organization
         else []
     )
-    financial_accounts = (
-        list(simulated_financial_accounts.values())
-        if is_default_organization
-        else []
-    )
-    messages = (
-        list(reversed(simulated_messages[-5:]))
-        if is_default_organization
-        else []
-    )
+    financial_accounts = list_financial_accounts(organization_id)
+    messages = list_simulated_messages(organization_id)[:5]
     support_requests = list_support_requests() if is_default_organization else []
-    network_alerts = list_active_alerts() if is_default_organization else []
+    network_alerts = list_active_alerts(organization_id)
     technicians = technician_store.list_all(organization_id)
     integration_config_store.ensure_unconfigured(organization_id)
     mkauth_settings = get_integration_settings(organization_id)

@@ -1,10 +1,17 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
-router = APIRouter(prefix="/notifications", tags=["whatsapp-simulator"])
+from app.api.routes.central_auth import require_central_access
+from app.core.tenant_context import get_current_organization
+
+router = APIRouter(
+    prefix="/notifications",
+    tags=["whatsapp-simulator"],
+    dependencies=[Depends(require_central_access)],
+)
 
 simulated_messages: list[dict] = []
 
@@ -37,6 +44,7 @@ def record_simulated_payment_message(
             f"no valor de R$ {amount}. Ainda existem {remaining_titles} título(s) pendente(s)."
         )
     message = {
+        "organization_id": get_current_organization(),
         "id": str(uuid4()),
         "channel": "whatsapp",
         "recipient": "+55 (00) 00000-0000",
@@ -51,9 +59,21 @@ def record_simulated_payment_message(
     return message
 
 
+def list_simulated_messages(organization_id: str | None = None) -> list[dict]:
+    current_organization_id = organization_id or get_current_organization()
+    return list(
+        reversed(
+            [
+                item for item in simulated_messages
+                if item.get("organization_id") == current_organization_id
+            ]
+        )
+    )
+
+
 @router.get("/messages")
 async def list_messages() -> list[dict]:
-    return list(reversed(simulated_messages))
+    return list_simulated_messages()
 
 
 @router.post("/simulate/{template}")
@@ -62,6 +82,7 @@ async def simulate_message(template: str, redirect: bool = False):
     if message_text is None:
         raise HTTPException(404, "simulated_template_not_found")
     message = {
+        "organization_id": get_current_organization(),
         "id": str(uuid4()),
         "channel": "whatsapp",
         "recipient": "+55 (00) 00000-0000",

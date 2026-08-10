@@ -16,7 +16,21 @@ from app.core.subscription_store import SubscriptionStore
 from app.core.config import get_settings
 from app.integrations.mkauth.inventory import SimulatedInventoryGateway
 from app.core.sync_store import SyncOperationStore
+from app.core.pix_simulation_store import PixSimulationStore
+from app.core.trust_unlock_store import TrustUnlockStore
 from app.domain.models import OperationResult
+from app.api.routes.financial import list_financial_accounts
+from app.api.routes.network import (
+    create_network_incident,
+    list_active_alerts,
+    resolve_network_incidents,
+)
+from app.api.routes.notifications import (
+    list_simulated_messages,
+    record_simulated_payment_message,
+    simulated_messages,
+)
+from app.core.tenant_context import set_current_organization
 
 
 def test_technicians_are_isolated_by_organization(tmp_path) -> None:
@@ -243,3 +257,61 @@ def test_subscriptions_and_limits_are_isolated_by_organization(tmp_path) -> None
         assert str(error) == "saas_central_users_limit_reached"
     else:
         raise AssertionError("subscription user limit was not enforced")
+
+
+def test_financial_simulator_is_isolated_by_organization() -> None:
+    default_id = get_settings().default_organization_id
+
+    assert len(list_financial_accounts(default_id)) == 1
+    assert list_financial_accounts("provedor-financeiro-vazio") == []
+
+
+def test_network_alerts_are_isolated_by_organization() -> None:
+    first_id = f"network-first-{uuid4()}"
+    second_id = f"network-second-{uuid4()}"
+    try:
+        created = create_network_incident(organization_id=first_id)
+
+        assert [item.id for item in list_active_alerts(first_id)] == [created.id]
+        assert list_active_alerts(second_id) == []
+    finally:
+        resolve_network_incidents(first_id)
+        resolve_network_incidents(second_id)
+
+
+def test_simulated_notifications_are_isolated_by_organization() -> None:
+    first_id = f"notifications-first-{uuid4()}"
+    second_id = f"notifications-second-{uuid4()}"
+    initial_count = len(simulated_messages)
+    try:
+        set_current_organization(first_id)
+        created = record_simulated_payment_message("cliente-1", "100", "49.90", 0)
+
+        assert [item["id"] for item in list_simulated_messages(first_id)] == [
+            created["id"]
+        ]
+        assert list_simulated_messages(second_id) == []
+    finally:
+        del simulated_messages[initial_count:]
+        set_current_organization(get_settings().default_organization_id)
+
+
+def test_financial_histories_are_isolated_by_organization(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'financial-history.db'}"
+    pix_store = PixSimulationStore(database_url)
+    trust_store = TrustUnlockStore(database_url)
+    try:
+        set_current_organization("provedor-financeiro-um")
+        pix = pix_store.create("title-uuid-1", "100", "cliente-1", "49.90")
+        unlock = trust_store.create("client-uuid-1", "cliente-1", "Teste seguro")
+
+        assert [item["id"] for item in pix_store.list_recent()] == [pix["id"]]
+        assert [item["id"] for item in trust_store.list_recent()] == [unlock["id"]]
+
+        set_current_organization("provedor-financeiro-dois")
+        assert pix_store.list_recent() == []
+        assert trust_store.list_recent() == []
+        assert pix_store.has_real_payment("title-uuid-1") is False
+        assert trust_store.get_active(unlock["id"]) is None
+    finally:
+        set_current_organization(get_settings().default_organization_id)

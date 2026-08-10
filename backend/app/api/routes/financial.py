@@ -1,9 +1,17 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
-router = APIRouter(prefix="/financial", tags=["financial-simulator"])
+from app.api.routes.central_auth import require_central_access
+from app.core.config import get_settings
+from app.core.tenant_context import get_current_organization
+
+router = APIRouter(
+    prefix="/financial",
+    tags=["financial-simulator"],
+    dependencies=[Depends(require_central_access)],
+)
 
 simulated_financial_accounts: dict[str, dict] = {
     "sim-customer-1": {
@@ -18,9 +26,24 @@ simulated_financial_accounts: dict[str, dict] = {
     }
 }
 
+_accounts_by_organization: dict[str, dict[str, dict]] = {
+    get_settings().default_organization_id: simulated_financial_accounts,
+}
 
-def reset_simulated_account(customer_id: str) -> dict:
-    account = _account(customer_id)
+
+def _organization_accounts(organization_id: str | None = None) -> dict[str, dict]:
+    current_organization_id = organization_id or get_current_organization()
+    return _accounts_by_organization.setdefault(current_organization_id, {})
+
+
+def list_financial_accounts(organization_id: str | None = None) -> list[dict]:
+    return list(_organization_accounts(organization_id).values())
+
+
+def reset_simulated_account(
+    customer_id: str, organization_id: str | None = None
+) -> dict:
+    account = _account(customer_id, organization_id)
     account.update(
         {
             "access_status": "blocked",
@@ -32,8 +55,8 @@ def reset_simulated_account(customer_id: str) -> dict:
     return account
 
 
-def _account(customer_id: str) -> dict:
-    account = simulated_financial_accounts.get(customer_id)
+def _account(customer_id: str, organization_id: str | None = None) -> dict:
+    account = _organization_accounts(organization_id).get(customer_id)
     if account is None:
         raise HTTPException(404, "simulated_customer_not_found")
     return account
@@ -41,28 +64,44 @@ def _account(customer_id: str) -> dict:
 
 @router.get("/accounts")
 async def list_accounts() -> list[dict]:
-    return list(simulated_financial_accounts.values())
+    return list_financial_accounts()
 
 
 @router.post("/accounts/{customer_id}/trust-unlock")
 async def trust_unlock(customer_id: str, redirect: bool = False):
-    account = _account(customer_id)
-    account["access_status"] = "trust_released"
-    account["trust_until"] = (
-        datetime.now(timezone.utc) + timedelta(hours=48)
-    ).isoformat()
+    account = trust_unlock_account(customer_id)
     if redirect:
         return RedirectResponse("/central", status_code=303)
     return account
 
 
+def trust_unlock_account(
+    customer_id: str,
+    organization_id: str | None = None,
+) -> dict:
+    account = _account(customer_id, organization_id)
+    account["access_status"] = "trust_released"
+    account["trust_until"] = (
+        datetime.now(timezone.utc) + timedelta(hours=48)
+    ).isoformat()
+    return account
+
+
 @router.post("/accounts/{customer_id}/simulate-pix")
 async def simulate_pix(customer_id: str, redirect: bool = False):
-    account = _account(customer_id)
+    account = simulate_pix_account(customer_id)
+    if redirect:
+        return RedirectResponse("/central", status_code=303)
+    return account
+
+
+def simulate_pix_account(
+    customer_id: str,
+    organization_id: str | None = None,
+) -> dict:
+    account = _account(customer_id, organization_id)
     account["invoice_status"] = "paid"
     account["access_status"] = "active"
     account["trust_until"] = None
     account["paid_at"] = datetime.now(timezone.utc).isoformat()
-    if redirect:
-        return RedirectResponse("/central", status_code=303)
     return account

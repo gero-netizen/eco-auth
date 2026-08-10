@@ -4,11 +4,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.api.routes.financial import (
+    list_financial_accounts,
     reset_simulated_account,
-    simulate_pix,
-    simulated_financial_accounts,
-    trust_unlock,
+    simulate_pix_account,
+    trust_unlock_account,
 )
+from app.core.config import get_settings
 from app.api.routes.support import list_support_requests, save_rating
 from app.api.routes.network import list_active_alerts
 from app.integrations.mkauth.client import simulated_mkauth_gateway
@@ -41,7 +42,11 @@ def _work_order_label(value: str) -> str:
 
 @router.get("/cliente", response_class=HTMLResponse)
 async def client_portal() -> str:
-    account = simulated_financial_accounts[_customer_id]
+    account = next(
+        item
+        for item in list_financial_accounts(get_settings().default_organization_id)
+        if item["id"] == _customer_id
+    )
     access_status = escape(_label(account["access_status"]))
     invoice_status = escape(_label(account["invoice_status"]))
     trust_message = (
@@ -191,17 +196,26 @@ async def rate_client_support(request_id: int, request: Request) -> RedirectResp
 
 @router.post("/cliente/desbloqueio-confianca")
 async def portal_trust_unlock() -> RedirectResponse:
-    await trust_unlock(_customer_id)
+    trust_unlock_account(
+        _customer_id,
+        organization_id=get_settings().default_organization_id,
+    )
     return RedirectResponse("/cliente", status_code=303)
 
 
 @router.post("/cliente/simular-pix")
 async def portal_simulate_pix() -> RedirectResponse:
-    await simulate_pix(_customer_id)
+    simulate_pix_account(
+        _customer_id,
+        organization_id=get_settings().default_organization_id,
+    )
     return RedirectResponse("/cliente", status_code=303)
 
 
 @router.post("/cliente/reiniciar")
 async def portal_reset() -> RedirectResponse:
-    reset_simulated_account(_customer_id)
+    reset_simulated_account(
+        _customer_id,
+        organization_id=get_settings().default_organization_id,
+    )
     return RedirectResponse("/cliente", status_code=303)
