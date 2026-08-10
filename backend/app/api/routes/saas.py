@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.routes.central_auth import require_central_roles, require_central_session
+from app.core.audit_store import audit_store
 from app.core.central_user_store import CENTRAL_USER_ROLES, central_user_store
 from app.core.integration_config_store import integration_config_store
 
@@ -13,6 +14,15 @@ class CreateCentralUserRequest(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=8, max_length=200)
     role: str
+
+
+@router.get("/audit-events")
+async def list_audit_events(
+    limit: int = 200,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> dict:
+    events = audit_store.list_recent(session["organization"]["id"], limit)
+    return {"events": events, "count": len(events)}
 
 
 @router.get("/organization/current")

@@ -6,6 +6,7 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.core.audit_store import audit_store
 from app.core.central_user_store import central_user_store
 from app.core.config import get_settings
 from app.core.organization_store import organization_store
@@ -72,7 +73,8 @@ def require_central_roles(*allowed_roles: str):
         session = require_central_session(request)
         if session["user"]["role"] not in allowed_roles:
             raise HTTPException(403, "central_role_not_allowed")
-        return session
+        yield session
+        _audit_mutation_once(request, session)
 
     return dependency
 
@@ -85,7 +87,23 @@ def require_central_access(request: Request) -> dict:
         "OPTIONS",
     }:
         raise HTTPException(403, "central_read_only_user")
-    return session
+    yield session
+    _audit_mutation_once(request, session)
+
+
+def _audit_mutation_once(request: Request, session: dict) -> None:
+    if request.method in {"GET", "HEAD", "OPTIONS"} or getattr(
+        request.state, "central_audit_recorded", False
+    ):
+        return
+    request.state.central_audit_recorded = True
+    audit_store.record(
+        session["organization"]["id"],
+        session["user"],
+        request.method,
+        request.url.path,
+        {"query": str(request.url.query)} if request.url.query else {},
+    )
 
 
 @router.get("/central/login", response_class=HTMLResponse)

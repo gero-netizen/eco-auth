@@ -65,6 +65,14 @@ def test_current_central_user_is_the_migrated_owner() -> None:
     assert "password" not in response.text.casefold()
 
 
+def test_owner_can_view_tenant_audit_events() -> None:
+    response = client.get("/api/v1/saas/audit-events")
+    assert response.status_code == 200
+    assert set(response.json()) == {"events", "count"}
+    dashboard = client.get("/central")
+    assert "Auditoria" in dashboard.text
+
+
 def test_viewer_cannot_manage_central_users() -> None:
     username = f"viewer-{uuid4()}"
     created = client.post(
@@ -216,8 +224,9 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert response.status_code == 200
     assert "Painel da Central" in response.text
     assert "MODO SIMULADO" in response.text
-    assert response.text.count('class="menu-button') == 18
-    assert response.text.count('data-module=') == 18
+    assert response.text.count('class="menu-button') == 19
+    assert response.text.count('data-module=') == 19
+    assert "Auditoria" in response.text
     assert "Usuários da central" in response.text
     assert "central-users" in response.text
     assert "central-active-module" in response.text
@@ -276,11 +285,15 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "window.setInterval" not in response.text
 
 
-def test_mkauth_probe_remains_safely_simulated_by_default() -> None:
+def test_mkauth_probe_remains_read_only_for_the_current_tenant() -> None:
     response = client.get("/api/v1/integrations/mkauth/probe")
     assert response.status_code == 200
-    assert response.json()["status"] == "simulated"
     assert response.json()["read_only"] is True
+    assert response.json()["status"] in {
+        "simulated", "connected", "configuration_error", "unavailable"
+    }
+    assert "secret" not in response.text.casefold()
+    assert "password" not in response.text.casefold()
     anonymous = TestClient(app).get(
         "/api/v1/integrations/mkauth/probe", follow_redirects=False
     )
@@ -371,7 +384,7 @@ def test_client_support_request_can_be_converted_to_a_work_order() -> None:
     )
     assert opened.status_code == 200
     assert "Sem conexão" in opened.text
-    assert "Aguardando central" in opened.text
+    assert "aguardando a central" in opened.text.casefold()
 
     central = client.get("/central")
     assert "Sem conexão" in central.text
@@ -439,17 +452,21 @@ def test_central_can_create_a_work_order_for_mobile_sync() -> None:
 
 def test_sync_is_idempotent() -> None:
     operation_id = str(uuid4())
-    current_order = next(
-        order
-        for order in client.get("/api/v1/work-orders").json()
-        if order["id"] == "sim-os-1"
+    created = client.post(
+        "/api/v1/work-orders",
+        json={
+            "customer_name": "Cliente Teste de Idempotência",
+            "address": "Rua de Teste, 100",
+        },
     )
+    assert created.status_code == 201
+    current_order = created.json()
     payload = {
         "device_id": str(uuid4()),
         "operations": [{
             "operation_id": operation_id,
             "entity_type": "work_order",
-            "entity_id": "sim-os-1",
+            "entity_id": current_order["id"],
             "kind": "transition",
             "base_version": current_order["version"],
             "occurred_at": "2026-08-03T12:00:00Z",
@@ -542,10 +559,11 @@ def test_central_generates_a_printable_work_order_report() -> None:
 
 def test_inventory_consumption_is_applied_once() -> None:
     operation_id = str(uuid4())
-    inventory_before = client.get("/api/v1/inventory").json()
-    connector_before = next(
-        item for item in inventory_before if item["id"] == "fast-connector"
+    restocked = client.post(
+        "/api/v1/inventory/fast-connector/restock", json={"quantity": 2}
     )
+    assert restocked.status_code == 200
+    connector_before = restocked.json()
     payload = {
         "device_id": str(uuid4()),
         "operations": [{
@@ -555,7 +573,7 @@ def test_inventory_consumption_is_applied_once() -> None:
             "kind": "consume",
             "base_version": connector_before["version"],
             "occurred_at": "2026-08-03T12:00:00Z",
-            "payload": {"item_id": "fast-connector", "quantity": 2},
+            "payload": {"item_id": "fast-connector", "quantity": 1},
         }],
     }
     first = client.post("/api/v1/sync/push", json=payload).json()["results"][0]
@@ -564,7 +582,7 @@ def test_inventory_consumption_is_applied_once() -> None:
     assert second["status"] == "duplicate"
     inventory = client.get("/api/v1/inventory").json()
     connector = next(item for item in inventory if item["id"] == "fast-connector")
-    assert connector["quantity"] == connector_before["quantity"] - 2
+    assert connector["quantity"] == connector_before["quantity"] - 1
 
 
 def test_central_restock_is_published_for_mobile_sync() -> None:

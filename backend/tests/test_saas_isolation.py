@@ -10,6 +10,7 @@ from app.core.integration_config_store import (
     TenantIntegrationSettings,
 )
 from app.core.central_user_store import CentralUserStore
+from app.core.audit_store import AuditStore
 
 
 def test_technicians_are_isolated_by_organization(tmp_path) -> None:
@@ -137,3 +138,21 @@ def test_central_users_are_isolated_by_organization(tmp_path) -> None:
     assert users.authenticate("provedor-dois", "atendimento", "Senha@456")["id"] == second["id"]
     assert users.authenticate("provedor-um", "atendimento", "Senha@456") is None
     assert [item["id"] for item in users.list_all("provedor-um")] == [first["id"]]
+
+
+def test_audit_events_are_isolated_by_organization(tmp_path) -> None:
+    store = AuditStore(f"sqlite:///{tmp_path / 'saas-audit.db'}")
+    first_user = {
+        "id": "user-1", "name": "Atendente Um", "username": "atendente",
+        "role": "attendant",
+    }
+    second_user = {
+        "id": "user-2", "name": "Administrador Dois", "username": "admin",
+        "role": "admin",
+    }
+    first = store.record("provedor-um", first_user, "POST", "/central/work-orders")
+    second = store.record("provedor-dois", second_user, "POST", "/central/users")
+
+    assert [item["id"] for item in store.list_recent("provedor-um")] == [first["id"]]
+    assert [item["id"] for item in store.list_recent("provedor-dois")] == [second["id"]]
+    assert store.get(second["id"], "provedor-um") is None

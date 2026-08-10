@@ -20,6 +20,7 @@ from app.api.routes.central_auth import (
     require_central_session,
 )
 from app.core.central_user_store import CENTRAL_USER_ROLES, central_user_store
+from app.core.audit_store import audit_store
 from app.core.technician_store import technician_store
 from app.core.config import get_settings
 from app.core.integration_config_store import get_integration_settings
@@ -259,6 +260,35 @@ async def central_dashboard(
             f"<label>Perfil<select name='role' required>{role_options}</select></label>"
             "<button type='submit'>CADASTRAR</button></form>"
         )
+    audit_rows = ""
+    if can_manage_users:
+        action_labels = {
+            "POST": "Alteração",
+            "PUT": "Atualização",
+            "PATCH": "Atualização",
+            "DELETE": "Exclusão",
+        }
+        audit_rows = "".join(
+            f"<tr><td>{escape(item['created_at'])} UTC</td>"
+            f"<td>{escape(item['user_name'])} ({escape(item['username'])})</td>"
+            f"<td>{escape(role_labels.get(item['role'], item['role']))}</td>"
+            f"<td>{escape(action_labels.get(item['action'], item['action']))}</td>"
+            f"<td><code>{escape(item['target'])}</code></td></tr>"
+            for item in audit_store.list_recent(organization_id, 200)
+        ) or "<tr><td colspan='5'>Nenhuma ação registrada ainda.</td></tr>"
+    audit_menu = (
+        '<button class="menu-button" type="button" data-target="audit">Auditoria</button>'
+        if can_manage_users
+        else ""
+    )
+    audit_panel = (
+        "<section class='module-panel' data-module='audit'><h2>Auditoria</h2>"
+        "<p>Registro das alterações realizadas nesta organização. Os dados de outros provedores nunca aparecem aqui.</p>"
+        "<table><thead><tr><th>Data</th><th>Usuário</th><th>Perfil</th><th>Ação</th><th>Destino</th></tr></thead>"
+        f"<tbody>{audit_rows}</tbody></table></section>"
+        if can_manage_users
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -333,6 +363,7 @@ async def central_dashboard(
         <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
         <button class="menu-button" type="button" data-target="technicians">Técnicos</button>
         <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
+        {audit_menu}
         <button class="menu-button" type="button" data-target="network">Monitoramento da rede</button>
         <button class="menu-button" type="button" data-target="routeros-diagnostic">Diagnóstico PPPoE/RADIUS</button>
         <button class="menu-button" type="button" data-target="provisioning">Últimos provisionamentos</button>
@@ -465,6 +496,7 @@ async def central_dashboard(
         {central_user_form}
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{central_user_rows}</tbody></table>
       </section>
+      {audit_panel}
       <section class="module-panel" data-module="network"><h2>Monitoramento da rede</h2>
         <p class="alert"><b>{len(network_alerts)} ocorrência(s) ativa(s)</b></p>
         <form method="post" action="/api/v1/network/incidents/simulate"><button type="submit">SIMULAR INDISPONIBILIDADE</button></form>
