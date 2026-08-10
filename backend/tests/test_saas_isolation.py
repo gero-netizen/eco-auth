@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from types import SimpleNamespace
 from uuid import uuid4
 
 from app.core.organization_store import OrganizationStore
@@ -27,6 +28,7 @@ from app.core.provisioning_store import ProvisioningStore
 from app.api.routes.evidence import EquipmentRequest, link_equipment, list_equipment
 from app.api.routes.olt import _gateway, _gateways
 from app.core.portal_customer_store import PortalCustomerStore
+from app.api.routes import client_portal as client_portal_routes
 from app.domain.models import OperationResult
 from app.api.routes.financial import list_financial_accounts
 from app.api.routes.network import (
@@ -455,3 +457,56 @@ def test_portal_customer_management_stays_inside_organization(tmp_path) -> None:
     )
     updated = store.authenticate("provider-1", "maria", "NovaSenha@2026")
     assert updated["external_customer_id"] == "mk-customer-2"
+
+
+def test_portal_financial_panel_only_renders_linked_login(monkeypatch) -> None:
+    monkeypatch.setattr(
+        client_portal_routes,
+        "get_integration_settings",
+        lambda _organization_id: SimpleNamespace(
+            mkauth_mode="real",
+            mkauth_base_url="https://mkauth.invalid",
+            mkauth_client_id="client",
+            mkauth_client_secret="secret",
+            mkauth_verify_ssl=False,
+            mkauth_allow_http=False,
+            app_env="development",
+        ),
+    )
+
+    async def fake_titles(_client, login: str) -> list[dict]:
+        assert login == "pppoe-maria"
+        return [
+            {
+                "titulo": "1001",
+                "login": "pppoe-maria",
+                "valor": "49.90",
+                "datavenc": "2026-08-10",
+                "status": "vencido",
+            },
+            {
+                "titulo": "SEGREDO",
+                "login": "outro-cliente",
+                "valor": "999.00",
+                "datavenc": "2026-08-11",
+                "status": "aberto",
+            },
+        ]
+
+    monkeypatch.setattr(
+        client_portal_routes.MkAuthApiClient,
+        "list_payable_titles",
+        fake_titles,
+    )
+    panel = asyncio.run(
+        client_portal_routes._mkauth_titles_panel(
+            "provider-1",
+            {
+                "external_customer_id": "mk-customer-1",
+                "external_login": "pppoe-maria",
+            },
+        )
+    )
+    assert "1001" in panel
+    assert "SEGREDO" not in panel
+    assert "outro-cliente" not in panel

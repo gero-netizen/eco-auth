@@ -1,6 +1,7 @@
 from html import escape
 from urllib.parse import parse_qs
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -11,6 +12,7 @@ from app.api.routes.financial import (
     trust_unlock_account,
 )
 from app.core.organization_store import organization_store
+from app.core.integration_config_store import get_integration_settings
 from app.core.portal_customer_store import portal_customer_store
 from app.core.portal_session import (
     PORTAL_COOKIE_NAME,
@@ -20,6 +22,7 @@ from app.core.portal_session import (
 from app.api.routes.support import list_support_requests, save_rating
 from app.api.routes.network import list_active_alerts
 from app.integrations.mkauth.client import simulated_mkauth_gateway
+from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(tags=["simulated-client-portal"])
 _customer_id = "sim-customer-1"
@@ -137,6 +140,69 @@ def _work_order_label(value: str) -> str:
     }.get(value, "Aguardando atualização")
 
 
+async def _mkauth_titles_panel(organization_id: str, customer: dict) -> str:
+    login = str(customer.get("external_login") or "").strip()
+    customer_uuid = str(customer.get("external_customer_id") or "").strip()
+    if not login or not customer_uuid:
+        return (
+            "<section><h2>Meus títulos</h2>"
+            "<p>Seu acesso ainda não foi vinculado ao cadastro do provedor.</p>"
+            "</section>"
+        )
+    settings = get_integration_settings(organization_id)
+    if settings.mkauth_mode != "real":
+        return (
+            "<section><h2>Meus títulos</h2>"
+            "<p>A consulta ao sistema financeiro ainda não está disponível.</p>"
+            "</section>"
+        )
+    try:
+        client = MkAuthApiClient(
+            settings.mkauth_base_url,
+            settings.mkauth_client_id,
+            settings.mkauth_client_secret,
+            settings.mkauth_verify_ssl,
+            settings.mkauth_allow_http and settings.app_env == "development",
+        )
+        raw_titles = await client.list_payable_titles(login)
+    except (ValueError, httpx.HTTPError):
+        return (
+            "<section><h2>Meus títulos</h2>"
+            "<p>Não foi possível consultar seus títulos agora. Tente novamente mais tarde.</p>"
+            "</section>"
+        )
+    safe_titles = [
+        item
+        for item in raw_titles
+        if not str(item.get("login") or "").strip()
+        or str(item.get("login") or "").strip().casefold() == login.casefold()
+    ]
+    safe_titles.sort(
+        key=lambda item: (
+            0
+            if str(item.get("status") or "").strip().casefold() == "vencido"
+            else 1,
+            str(item.get("datavenc") or item.get("vencimento") or "9999-12-31"),
+        )
+    )
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(str(item.get('titulo') or item.get('numero') or '-'))}</td>"
+        f"<td>R$ {escape(str(item.get('valor') or '0,00'))}</td>"
+        f"<td>{escape(str(item.get('datavenc') or item.get('vencimento') or '-'))}</td>"
+        f"<td>{escape(_label(str(item.get('status') or '-').strip().casefold()))}</td>"
+        "</tr>"
+        for item in safe_titles
+    ) or "<tr><td colspan='4'>Nenhum título vencido ou a vencer.</td></tr>"
+    return (
+        "<section><h2>Meus títulos</h2>"
+        f"<p>Cadastro vinculado: <b>{escape(login)}</b></p>"
+        "<p><small>Consulta real e somente leitura no MK-AUTH.</small></p>"
+        "<table><thead><tr><th>Título</th><th>Valor</th><th>Vencimento</th>"
+        f"<th>Situação</th></tr></thead><tbody>{rows}</tbody></table></section>"
+    )
+
+
 @router.get("/cliente", response_class=HTMLResponse)
 @router.get("/portal/{organization_slug}", response_class=HTMLResponse)
 async def client_portal(
@@ -145,6 +211,7 @@ async def client_portal(
     organization, portal_path = _portal_organization(organization_slug)
     customer = _authenticated_customer(request, organization, organization_slug)
     organization_id = organization["id"]
+    mkauth_titles_panel = await _mkauth_titles_panel(organization_id, customer)
     account = ensure_simulated_account(
         organization_id,
         organization["name"],
@@ -201,6 +268,7 @@ async def client_portal(
 {logout_form}
 <p class="simulation"><b>MODO SIMULADO</b> — nenhum pagamento ou desbloqueio real será realizado.</p>
 {network_notice}
+{mkauth_titles_panel}
 <section><h2>Minha conexão</h2><p class="status">{access_status}</p><p>{trust_message}</p></section>
 <section><h2>Minha fatura</h2><div class="amount">R$ {account['invoice_amount']:.2f}</div><p>Situação: <b>{invoice_status}</b></p>
 <p>Código Pix exclusivamente fictício:</p><code>PIX-SIMULADO-{escape(account['invoice_id'].upper())}-NAO-PAGAR</code></section>
