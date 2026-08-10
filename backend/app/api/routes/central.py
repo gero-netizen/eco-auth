@@ -299,11 +299,11 @@ async def central_dashboard(
     if can_manage_users:
         portal_customer_form = (
             "<form class='create-order' method='post' action='/central/portal-customers'>"
-            "<label>Nome<input name='name' minlength='3' maxlength='100' required></label>"
-            "<label>Usuário<input name='username' minlength='3' maxlength='80' required></label>"
-            "<label>Senha inicial<input name='password' type='password' minlength='8' maxlength='200' required></label>"
-            "<label>Login MK-AUTH<input name='external_login' minlength='1' maxlength='100' required></label>"
-            "<label>Identificador MK-AUTH<input name='external_customer_id' minlength='1' maxlength='100' required></label>"
+            "<label>Nome<input id='portal-customer-name' name='name' minlength='3' maxlength='100' required></label>"
+            "<label>Usuário<input id='portal-customer-username' name='username' minlength='3' maxlength='80' required></label>"
+            "<label>Senha inicial<input id='portal-customer-password' name='password' type='password' minlength='8' maxlength='200' required></label>"
+            "<label>Login MK-AUTH<input id='portal-customer-external-login' name='external_login' minlength='1' maxlength='100' readonly required></label>"
+            "<label>Identificador MK-AUTH<input id='portal-customer-external-id' name='external_customer_id' minlength='1' maxlength='100' readonly required></label>"
             "<button type='submit'>CADASTRAR</button></form>"
         )
     subscription = subscription_store.get_or_create(organization_id)
@@ -421,6 +421,7 @@ async def central_dashboard(
     .alert {{ color:#8a4b00; }} footer {{ margin-top:20px; color:#627773; }}
     .role-viewer form:not(.logout-form) {{ display:none !important; }}
     .role-viewer .danger-link {{ display:none !important; }}
+    .role-viewer .portal-manage-button, .role-attendant .portal-manage-button {{ display:none !important; }}
   </style>
 </head>
 <body class="role-{escape(current_user['role'])}">
@@ -580,6 +581,7 @@ async def central_dashboard(
       <section class="module-panel" data-module="portal-customers">
         <h2>Clientes do portal</h2>
         <p>Contas que acessam o portal deste provedor. Senhas nunca são exibidas.</p>
+        <p id="portal-customer-form-status">Selecione um cliente ativo em Clientes MK-AUTH para preparar um novo acesso.</p>
         {portal_customer_form}
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Login MK-AUTH</th><th>Identificador MK-AUTH</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{portal_customer_rows}</tbody></table>
       </section>
@@ -812,6 +814,27 @@ async def central_dashboard(
               detailsButton.addEventListener('click', () => loadMkauthClientDetails(client.login, detailsTarget, client.uuid));
               actionCell.appendChild(detailsButton);
               if (allowPppoeDiagnostic) {{
+                const portalButton = document.createElement('button');
+                portalButton.type = 'button';
+                portalButton.className = 'portal-manage-button';
+                portalButton.textContent = 'CRIAR ACESSO AO PORTAL';
+                portalButton.addEventListener('click', () => {{
+                  const nameInput = document.getElementById('portal-customer-name');
+                  const usernameInput = document.getElementById('portal-customer-username');
+                  const passwordInput = document.getElementById('portal-customer-password');
+                  const loginInput = document.getElementById('portal-customer-external-login');
+                  const idInput = document.getElementById('portal-customer-external-id');
+                  if (!nameInput || !usernameInput || !passwordInput || !loginInput || !idInput) return;
+                  nameInput.value = client.name;
+                  usernameInput.value = client.login;
+                  loginInput.value = client.login;
+                  idInput.value = client.uuid || '';
+                  document.getElementById('portal-customer-form-status').textContent =
+                    `Novo acesso preparado para ${{client.name}}. Defina a senha inicial e confirme o cadastro.`;
+                  activateModule('portal-customers');
+                  passwordInput.focus();
+                }});
+                actionCell.appendChild(portalButton);
                 const diagnosticButton = document.createElement('button');
                 diagnosticButton.type = 'button';
                 diagnosticButton.textContent = 'VER PPPoE';

@@ -256,6 +256,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "Auditoria" in response.text
     assert "Usuários da central" in response.text
     assert "central-users" in response.text
+    assert "CRIAR ACESSO AO PORTAL" in response.text
+    assert "portal-customer-external-id" in response.text
     assert "central-active-module" in response.text
     assert "/api/v1/integrations/mkauth/plans" in response.text
     assert "mkauth-plans-body" in response.text
