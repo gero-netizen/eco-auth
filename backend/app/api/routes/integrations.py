@@ -6,7 +6,7 @@ import httpx
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from app.api.routes.central_auth import require_central_session
+from app.api.routes.central_auth import require_central_access, require_central_roles
 from app.core.config import get_settings
 from app.core.pix_simulation_store import PixSimulationStore
 from app.core.trust_unlock_store import TrustUnlockStore
@@ -27,7 +27,7 @@ def _tenant_integration_settings():
 router = APIRouter(
     prefix="/integrations",
     tags=["integrations"],
-    dependencies=[Depends(require_central_session)],
+    dependencies=[Depends(require_central_access)],
 )
 
 
@@ -111,7 +111,10 @@ async def list_mkauth_pix_simulations() -> dict:
 
 
 @router.post("/mkauth/pix-payments")
-async def create_mkauth_pix_payment(request: PixRealPaymentRequest) -> dict:
+async def create_mkauth_pix_payment(
+    request: PixRealPaymentRequest,
+    _session: dict = Depends(require_central_roles("owner", "admin")),
+) -> dict:
     settings = _tenant_integration_settings()
     if not request.confirmed or request.confirmation_text.strip().upper() != "BAIXAR":
         return {"status": "confirmation_required"}

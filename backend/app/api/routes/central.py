@@ -14,7 +14,11 @@ from app.api.routes.financial import simulated_financial_accounts
 from app.api.routes.notifications import simulated_messages
 from app.api.routes.support import list_support_requests
 from app.api.routes.network import list_active_alerts
-from app.api.routes.central_auth import require_central_roles, require_central_session
+from app.api.routes.central_auth import (
+    require_central_access,
+    require_central_roles,
+    require_central_session,
+)
 from app.core.central_user_store import CENTRAL_USER_ROLES, central_user_store
 from app.core.technician_store import technician_store
 from app.core.config import get_settings
@@ -23,7 +27,7 @@ from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
     tags=["central-dashboard"],
-    dependencies=[Depends(require_central_session)],
+    dependencies=[Depends(require_central_access)],
 )
 
 
@@ -186,16 +190,31 @@ async def central_dashboard(
         f"<td>{escape(alert.detected_at.isoformat())}</td></tr>"
         for alert in network_alerts
     ) or "<tr><td colspan='3'>Nenhuma ocorrência ativa.</td></tr>"
+    current_user = session["user"]
+    can_manage_technicians = current_user["role"] in {"owner", "admin"}
     technician_rows = "".join(
         f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
         f"<td>{'Ativo' if item['active'] else 'Inativo'}</td><td>"
-        f"<form method='post' action='/central/technicians/{escape(item['id'])}/toggle'>"
-        f"<input type='hidden' name='active' value='{'0' if item['active'] else '1'}'>"
-        f"<button class='{'secondary' if item['active'] else ''}' type='submit'>"
-        f"{'DESATIVAR' if item['active'] else 'ATIVAR'}</button></form></td></tr>"
+        + (
+            f"<form method='post' action='/central/technicians/{escape(item['id'])}/toggle'>"
+            f"<input type='hidden' name='active' value='{'0' if item['active'] else '1'}'>"
+            f"<button class='{'secondary' if item['active'] else ''}' type='submit'>"
+            f"{'DESATIVAR' if item['active'] else 'ATIVAR'}</button></form>"
+            if can_manage_technicians
+            else "-"
+        )
+        + "</td></tr>"
         for item in technicians
     )
-    current_user = session["user"]
+    technician_form = ""
+    if can_manage_technicians:
+        technician_form = """
+        <form class="create-order" method="post" action="/central/technicians">
+          <label>Nome<input name="name" minlength="3" maxlength="100" required></label>
+          <label>Usuário<input name="username" minlength="3" maxlength="80" required></label>
+          <label>Senha inicial<input name="password" type="password" minlength="8" maxlength="200" required></label>
+          <button type="submit">CADASTRAR</button>
+        </form>"""
     can_manage_users = current_user["role"] in {"owner", "admin"}
     central_users = (
         central_user_store.list_all(organization_id)
@@ -291,10 +310,12 @@ async def central_dashboard(
     }}
     @media(max-width:700px) {{ .create-order {{ grid-template-columns:1fr; }} }}
     .alert {{ color:#8a4b00; }} footer {{ margin-top:20px; color:#627773; }}
+    .role-viewer form:not(.logout-form) {{ display:none !important; }}
+    .role-viewer .danger-link {{ display:none !important; }}
   </style>
 </head>
-<body>
-  <header><h1>Painel da Central</h1><div>Operação de campo • G7 Networks</div><form method="post" action="/central/logout"><button class="secondary" type="submit">SAIR</button></form></header>
+<body class="role-{escape(current_user['role'])}">
+  <header><h1>Painel da Central</h1><div>{escape(session['organization']['name'])} • {escape(current_user['name'])} • {escape(role_labels[current_user['role']])}</div><form class="logout-form" method="post" action="/central/logout"><button class="secondary" type="submit">SAIR</button></form></header>
   <main>
     <div class="simulation"><b>MODO SIMULADO</b> — nenhum dado desta tela representa clientes ou equipamentos reais.</div>
     <div class="cards">
@@ -435,12 +456,7 @@ async def central_dashboard(
       </section>
       <section class="module-panel" data-module="technicians">
         <h2>Técnicos</h2>
-        <form class="create-order" method="post" action="/central/technicians">
-          <label>Nome<input name="name" minlength="3" maxlength="100" required></label>
-          <label>Usuário<input name="username" minlength="3" maxlength="80" required></label>
-          <label>Senha inicial<input name="password" type="password" minlength="8" maxlength="200" required></label>
-          <button type="submit">CADASTRAR</button>
-        </form>
+        {technician_form}
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{technician_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="central-users">
@@ -1300,7 +1316,7 @@ async def central_close_mkauth_ticket(
 @router.post("/central/technicians", include_in_schema=False)
 async def central_create_technician(
     request: Request,
-    session: dict = Depends(require_central_session),
+    session: dict = Depends(require_central_roles("owner", "admin")),
 ) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     name = fields.get("name", [""])[0].strip()
@@ -1524,7 +1540,7 @@ async def central_update_work_order_planning(
 async def central_toggle_technician(
     technician_id: str,
     request: Request,
-    session: dict = Depends(require_central_session),
+    session: dict = Depends(require_central_roles("owner", "admin")),
 ) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     active = fields.get("active", ["0"])[0] == "1"

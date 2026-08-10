@@ -77,6 +77,17 @@ def require_central_roles(*allowed_roles: str):
     return dependency
 
 
+def require_central_access(request: Request) -> dict:
+    session = require_central_session(request)
+    if session["user"]["role"] == "viewer" and request.method not in {
+        "GET",
+        "HEAD",
+        "OPTIONS",
+    }:
+        raise HTTPException(403, "central_read_only_user")
+    return session
+
+
 @router.get("/central/login", response_class=HTMLResponse)
 async def central_login_page(request: Request, error: bool = False):
     if _valid_session(request.cookies.get(_cookie_name)):

@@ -96,6 +96,15 @@ def test_viewer_cannot_manage_central_users() -> None:
         assert dashboard.status_code == 200
         assert "Somente leitura" in dashboard.text
         assert "action='/central/users'" not in dashboard.text
+        assert "action=\"/central/technicians\"" not in dashboard.text
+        assert viewer.post(
+            "/central/technicians",
+            data={"name": "Bloqueado", "username": "bloqueado", "password": "Senha@123"},
+        ).status_code == 403
+        assert viewer.post(
+            "/api/v1/work-orders/from-central",
+            data={"customer_name": "Cliente Bloqueado", "address": "Rua Teste, 10"},
+        ).status_code == 403
     finally:
         central_user_store.delete(user_id, "g7-networks")
 
