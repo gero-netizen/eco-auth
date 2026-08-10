@@ -59,6 +59,30 @@ def record_simulated_payment_message(
     return message
 
 
+def record_simulated_portal_invite_message(
+    organization_id: str,
+    login: str,
+    invite_url: str,
+) -> dict:
+    message = {
+        "organization_id": organization_id,
+        "id": str(uuid4()),
+        "channel": "whatsapp",
+        "recipient": "+55 (00) 00000-0000",
+        "login": login,
+        "template": "portal_access_invite",
+        "message": (
+            "Seu acesso ao Portal do Cliente foi criado. "
+            f"Defina sua senha usando este link temporário: {invite_url}"
+        ),
+        "status": "simulated_sent",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "simulated": True,
+    }
+    simulated_messages.append(message)
+    return message
+
+
 def list_simulated_messages(organization_id: str | None = None) -> list[dict]:
     current_organization_id = organization_id or get_current_organization()
     return list(

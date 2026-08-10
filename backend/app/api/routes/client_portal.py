@@ -14,6 +14,7 @@ from app.api.routes.financial import (
 from app.core.organization_store import organization_store
 from app.core.integration_config_store import get_integration_settings
 from app.core.portal_customer_store import portal_customer_store
+from app.core.portal_invite_store import portal_invite_store
 from app.core.portal_session import (
     PORTAL_COOKIE_NAME,
     new_portal_session,
@@ -116,6 +117,64 @@ async def portal_logout(organization_slug: str) -> RedirectResponse:
         PORTAL_COOKIE_NAME, path=f"/portal/{organization_slug}"
     )
     return response
+
+
+@router.get(
+    "/portal/{organization_slug}/convite/{token}",
+    response_class=HTMLResponse,
+    name="portal_invite_page",
+)
+async def portal_invite_page(organization_slug: str, token: str) -> str:
+    organization = organization_store.get_active_by_slug(organization_slug)
+    if organization is None:
+        raise HTTPException(404, "organization_not_found")
+    invite = portal_invite_store.inspect(organization["id"], token)
+    if invite is None:
+        raise HTTPException(410, "portal_invite_invalid_or_expired")
+    customer = portal_customer_store.get_active(
+        organization["id"], invite["customer_id"]
+    )
+    if customer is None:
+        raise HTTPException(410, "portal_invite_customer_unavailable")
+    return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Definir senha</title>
+<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}}main{{width:min(420px,90vw);background:white;padding:28px;border-radius:16px;box-shadow:0 4px 22px #17332f22}}h1{{color:#075e54}}form,label{{display:grid;gap:8px}}form{{gap:16px}}input{{padding:11px;border:1px solid #aac0bb;border-radius:8px;font:inherit}}button{{padding:12px;border:0;border-radius:8px;background:#075e54;color:white;font-weight:bold;cursor:pointer}}</style></head>
+<body><main><h1>{escape(organization['name'])}</h1>
+<p>Olá, <b>{escape(customer['name'])}</b>. Defina sua senha de acesso ao Portal do Cliente.</p>
+<form method="post" action="/portal/{escape(organization_slug)}/convite/{escape(token)}">
+<label>Nova senha<input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label>
+<label>Confirmar senha<input name="password_confirmation" type="password" minlength="8" maxlength="200" autocomplete="new-password" required></label>
+<button type="submit">DEFINIR MINHA SENHA</button></form></main></body></html>"""
+
+
+@router.post(
+    "/portal/{organization_slug}/convite/{token}",
+    response_class=HTMLResponse,
+)
+async def portal_accept_invite(
+    organization_slug: str, token: str, request: Request
+) -> str:
+    organization = organization_store.get_active_by_slug(organization_slug)
+    if organization is None:
+        raise HTTPException(404, "organization_not_found")
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    password = fields.get("password", [""])[0]
+    confirmation = fields.get("password_confirmation", [""])[0]
+    if len(password) < 8 or password != confirmation:
+        raise HTTPException(422, "invalid_portal_invite_password")
+    invite = portal_invite_store.consume(organization["id"], token)
+    if invite is None:
+        raise HTTPException(410, "portal_invite_invalid_or_expired")
+    try:
+        portal_customer_store.reset_password(
+            organization["id"], invite["customer_id"], password
+        )
+    except KeyError as error:
+        raise HTTPException(410, "portal_invite_customer_unavailable") from error
+    login_url = f"/portal/{escape(organization_slug)}/login"
+    return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Senha definida</title></head>
+<body style="font:16px system-ui,sans-serif;background:#f3f8f7;color:#17332f"><main style="width:min(420px,90vw);margin:15vh auto;background:white;padding:28px;border-radius:16px"><h1>Senha definida com sucesso</h1><p>O convite foi utilizado e não poderá ser aberto novamente.</p><p><a href="{login_url}">ENTRAR NO PORTAL</a></p></main></body></html>"""
 
 
 def _label(value: str) -> str:

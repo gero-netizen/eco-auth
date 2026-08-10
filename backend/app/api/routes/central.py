@@ -1,5 +1,6 @@
 from html import escape
 from datetime import datetime, timezone
+import secrets
 from urllib.parse import parse_qs
 
 import httpx
@@ -11,7 +12,10 @@ from app.api.routes.olt import provisioning_store
 from app.integrations.mkauth.client import simulated_mkauth_gateway
 from app.integrations.mkauth.inventory import simulated_inventory_gateway
 from app.api.routes.financial import list_financial_accounts
-from app.api.routes.notifications import list_simulated_messages
+from app.api.routes.notifications import (
+    list_simulated_messages,
+    record_simulated_portal_invite_message,
+)
 from app.api.routes.support import list_support_requests
 from app.api.routes.network import list_active_alerts
 from app.api.routes.central_auth import (
@@ -29,6 +33,7 @@ from app.core.integration_config_store import (
 )
 from app.core.subscription_store import SAAS_PLANS, subscription_store
 from app.core.portal_customer_store import portal_customer_store
+from app.core.portal_invite_store import portal_invite_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -177,11 +182,21 @@ async def central_dashboard(
         f"<button type='submit'>Simular Pix</button></form></td></tr>"
         for account in financial_accounts
     )
+    def message_content(message: dict) -> str:
+        content = escape(message["message"])
+        if message.get("template") == "portal_access_invite":
+            invite_url = str(message["message"]).rsplit(" ", 1)[-1]
+            content += (
+                f"<br><a class='button-link' href='{escape(invite_url)}' "
+                "target='_blank' rel='noopener'>ABRIR CONVITE</a>"
+            )
+        return content
+
     message_rows = "".join(
         f"<tr><td>{escape(message['template'])}</td>"
         f"<td>{escape(message.get('login', '-'))}</td>"
         f"<td>{escape(message['recipient'])}</td>"
-        f"<td>{escape(message['message'])}</td>"
+        f"<td>{message_content(message)}</td>"
         f"<td>{escape(message['status'])}</td>"
         f"<td>{escape(message['created_at'])}</td></tr>"
         for message in messages
@@ -295,17 +310,6 @@ async def central_dashboard(
         ) + "</td></tr>"
         for item in portal_customers
     ) or "<tr><td colspan='6'>Nenhum cliente cadastrado.</td></tr>"
-    portal_customer_form = ""
-    if can_manage_users:
-        portal_customer_form = (
-            "<form class='create-order' method='post' action='/central/portal-customers'>"
-            "<label>Nome<input id='portal-customer-name' name='name' minlength='3' maxlength='100' required></label>"
-            "<label>Usuário<input id='portal-customer-username' name='username' minlength='3' maxlength='80' required></label>"
-            "<label>Senha inicial<input id='portal-customer-password' name='password' type='password' minlength='8' maxlength='200' required></label>"
-            "<label>Login MK-AUTH<input id='portal-customer-external-login' name='external_login' minlength='1' maxlength='100' readonly required></label>"
-            "<label>Identificador MK-AUTH<input id='portal-customer-external-id' name='external_customer_id' minlength='1' maxlength='100' readonly required></label>"
-            "<button type='submit'>CADASTRAR</button></form>"
-        )
     subscription = subscription_store.get_or_create(organization_id)
     subscription_plan = subscription["plan"]
     active_user_count = sum(bool(item["active"]) for item in all_central_users)
@@ -580,9 +584,7 @@ async def central_dashboard(
       </section>
       <section class="module-panel" data-module="portal-customers">
         <h2>Clientes do portal</h2>
-        <p>Contas que acessam o portal deste provedor. Senhas nunca são exibidas.</p>
-        <p id="portal-customer-form-status">Selecione um cliente ativo em Clientes MK-AUTH para preparar um novo acesso.</p>
-        {portal_customer_form}
+        <p>Contas que já possuem acesso ao portal deste provedor. Senhas nunca são exibidas.</p>
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Login MK-AUTH</th><th>Identificador MK-AUTH</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{portal_customer_rows}</tbody></table>
       </section>
       {subscription_panel}
@@ -817,22 +819,31 @@ async def central_dashboard(
                 const portalButton = document.createElement('button');
                 portalButton.type = 'button';
                 portalButton.className = 'portal-manage-button';
-                portalButton.textContent = 'CRIAR ACESSO AO PORTAL';
+                portalButton.textContent = 'CRIAR ACESSO E ENVIAR CONVITE';
                 portalButton.addEventListener('click', () => {{
-                  const nameInput = document.getElementById('portal-customer-name');
-                  const usernameInput = document.getElementById('portal-customer-username');
-                  const passwordInput = document.getElementById('portal-customer-password');
-                  const loginInput = document.getElementById('portal-customer-external-login');
-                  const idInput = document.getElementById('portal-customer-external-id');
-                  if (!nameInput || !usernameInput || !passwordInput || !loginInput || !idInput) return;
-                  nameInput.value = client.name;
-                  usernameInput.value = client.login;
-                  loginInput.value = client.login;
-                  idInput.value = client.uuid || '';
-                  document.getElementById('portal-customer-form-status').textContent =
-                    `Novo acesso preparado para ${{client.name}}. Defina a senha inicial e confirme o cadastro.`;
-                  activateModule('portal-customers');
-                  passwordInput.focus();
+                  if (!client.uuid) {{
+                    window.alert('Este cliente não possui identificador no MK-AUTH.');
+                    return;
+                  }}
+                  if (!window.confirm(`Criar acesso ao portal e convite para ${{client.name}}?`)) return;
+                  const form = document.createElement('form');
+                  form.method = 'post';
+                  form.action = '/central/portal-customers/invite-from-mkauth';
+                  const values = {{
+                    name: client.name,
+                    username: client.login,
+                    external_login: client.login,
+                    external_customer_id: client.uuid,
+                  }};
+                  Object.entries(values).forEach(([name, value]) => {{
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = name;
+                    input.value = value;
+                    form.appendChild(input);
+                  }});
+                  document.body.appendChild(form);
+                  form.submit();
                 }});
                 actionCell.appendChild(portalButton);
                 const diagnosticButton = document.createElement('button');
@@ -1554,6 +1565,66 @@ async def central_create_portal_customer(
 
 
 @router.post(
+    "/central/portal-customers/invite-from-mkauth", include_in_schema=False
+)
+async def central_invite_mkauth_customer_to_portal(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    name = fields.get("name", [""])[0].strip()
+    username = fields.get("username", [""])[0].strip().casefold()
+    external_login = fields.get("external_login", [""])[0].strip()
+    external_customer_id = fields.get("external_customer_id", [""])[0].strip()
+    if (
+        len(name) < 3
+        or len(username) < 3
+        or not external_login
+        or not external_customer_id
+    ):
+        raise HTTPException(422, "invalid_mkauth_portal_invite_data")
+
+    organization_id = session["organization"]["id"]
+    customer = next(
+        (
+            item
+            for item in portal_customer_store.list_all(organization_id)
+            if item.get("external_customer_id") == external_customer_id
+            or str(item.get("external_login") or "").casefold()
+            == external_login.casefold()
+        ),
+        None,
+    )
+    if customer is None:
+        try:
+            customer = portal_customer_store.create(
+                organization_id,
+                name,
+                username,
+                secrets.token_urlsafe(32),
+                external_customer_id,
+                external_login,
+            )
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+    if not customer["active"]:
+        raise HTTPException(409, "portal_customer_inactive")
+
+    invite = portal_invite_store.create(organization_id, customer["id"])
+    invite_url = str(
+        request.url_for(
+            "portal_invite_page",
+            organization_slug=session["organization"]["slug"],
+            token=invite["token"],
+        )
+    )
+    record_simulated_portal_invite_message(
+        organization_id, external_login, invite_url
+    )
+    return RedirectResponse("/central#whatsapp", status_code=303)
+
+
+@router.post(
     "/central/portal-customers/{customer_id}/link", include_in_schema=False
 )
 async def central_link_portal_customer(
@@ -1578,6 +1649,42 @@ async def central_link_portal_customer(
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     return RedirectResponse("/central#portal-customers", status_code=303)
+
+
+@router.post(
+    "/central/portal-customers/{customer_id}/invite", include_in_schema=False
+)
+async def central_invite_portal_customer(
+    customer_id: str,
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    customer = next(
+        (
+            item
+            for item in portal_customer_store.list_all(organization_id)
+            if item["id"] == customer_id and item["active"]
+        ),
+        None,
+    )
+    if customer is None:
+        raise HTTPException(404, "portal_customer_not_found")
+    invite = portal_invite_store.create(organization_id, customer_id)
+    organization_slug = session["organization"]["slug"]
+    invite_url = str(
+        request.url_for(
+            "portal_invite_page",
+            organization_slug=organization_slug,
+            token=invite["token"],
+        )
+    )
+    record_simulated_portal_invite_message(
+        organization_id,
+        customer["external_login"] or customer["username"],
+        invite_url,
+    )
+    return RedirectResponse("/central#whatsapp", status_code=303)
 
 
 @router.post(

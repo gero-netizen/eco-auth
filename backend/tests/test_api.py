@@ -10,6 +10,8 @@ from app.api.routes.support import create_support_request, list_support_requests
 from app.api.routes.network import create_network_incident, resolve_network_incidents
 from app.core.technician_store import technician_store
 from app.core.central_user_store import central_user_store
+from app.core.portal_customer_store import portal_customer_store
+from app.api.routes.notifications import list_simulated_messages
 
 client = TestClient(app)
 client.post(
@@ -256,8 +258,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "Auditoria" in response.text
     assert "Usuários da central" in response.text
     assert "central-users" in response.text
-    assert "CRIAR ACESSO AO PORTAL" in response.text
-    assert "portal-customer-external-id" in response.text
+    assert "CRIAR ACESSO E ENVIAR CONVITE" in response.text
+    assert "Contas que já possuem acesso ao portal" in response.text
     assert "central-active-module" in response.text
     assert "/api/v1/integrations/mkauth/plans" in response.text
     assert "mkauth-plans-body" in response.text
@@ -319,6 +321,46 @@ def test_portal_login_does_not_publish_fixed_credentials() -> None:
     assert response.status_code == 200
     assert "credenciais fornecidas pelo seu provedor" in response.text
     assert "Cliente@2026" not in response.text
+
+
+def test_portal_invite_sets_password_once_without_sending_password() -> None:
+    username = f"portal-{uuid4()}"
+    external_id = f"mk-{uuid4()}"
+    external_login = f"pppoe-{uuid4()}"
+    invited = client.post(
+        "/central/portal-customers/invite-from-mkauth",
+        data={
+            "name": "Cliente Convidado",
+            "username": username,
+            "external_customer_id": external_id,
+            "external_login": external_login,
+        },
+        follow_redirects=False,
+    )
+    assert invited.status_code == 303
+    message = list_simulated_messages("g7-networks")[0]
+    assert message["template"] == "portal_access_invite"
+    assert message["login"] == external_login
+    invite_url = message["message"].split()[-1]
+
+    anonymous = TestClient(app)
+    assert anonymous.get(invite_url).status_code == 200
+    accepted = anonymous.post(
+        invite_url,
+        data={
+            "password": "NovaSenha@2026",
+            "password_confirmation": "NovaSenha@2026",
+        },
+    )
+    assert accepted.status_code == 200
+    assert "Senha definida com sucesso" in accepted.text
+    assert anonymous.get(invite_url).status_code == 410
+    login = anonymous.post(
+        "/portal/g7-networks/login",
+        data={"username": username, "password": "NovaSenha@2026"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 303
 
 
 def test_mkauth_probe_remains_read_only_for_the_current_tenant() -> None:
