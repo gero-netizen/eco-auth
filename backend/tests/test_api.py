@@ -9,6 +9,7 @@ from app.main import app
 from app.api.routes.support import create_support_request, list_support_requests
 from app.api.routes.network import create_network_incident, resolve_network_incidents
 from app.core.technician_store import technician_store
+from app.core.central_user_store import central_user_store
 
 client = TestClient(app)
 client.post(
@@ -54,6 +55,45 @@ def test_integration_summary_never_exposes_secrets() -> None:
     serialized = response.text.casefold()
     assert "client_secret" not in serialized
     assert "password" not in serialized
+
+
+def test_current_central_user_is_the_migrated_owner() -> None:
+    response = client.get("/api/v1/saas/users/current")
+    assert response.status_code == 200
+    assert response.json()["role"] == "owner"
+    assert response.json()["organization_id"] == "g7-networks"
+    assert "password" not in response.text.casefold()
+
+
+def test_viewer_cannot_manage_central_users() -> None:
+    username = f"viewer-{uuid4()}"
+    created = client.post(
+        "/api/v1/saas/users",
+        json={
+            "name": "Consulta Operacional",
+            "username": username,
+            "password": "Senha@123",
+            "role": "viewer",
+        },
+    )
+    assert created.status_code == 201
+    user_id = created.json()["id"]
+    try:
+        viewer = TestClient(app)
+        login = viewer.post(
+            "/central/login",
+            data={
+                "organization_slug": "g7-networks",
+                "username": username,
+                "password": "Senha@123",
+            },
+            follow_redirects=False,
+        )
+        assert login.status_code == 303
+        assert viewer.get("/api/v1/saas/users").status_code == 403
+        assert viewer.get("/api/v1/saas/users/current").status_code == 200
+    finally:
+        central_user_store.delete(user_id, "g7-networks")
 
 
 def test_technician_api_requires_a_valid_login() -> None:

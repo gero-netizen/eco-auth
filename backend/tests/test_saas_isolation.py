@@ -9,6 +9,7 @@ from app.core.integration_config_store import (
     IntegrationConfigStore,
     TenantIntegrationSettings,
 )
+from app.core.central_user_store import CentralUserStore
 
 
 def test_technicians_are_isolated_by_organization(tmp_path) -> None:
@@ -120,3 +121,19 @@ def test_integration_credentials_are_encrypted_and_isolated(tmp_path) -> None:
         ).fetchone()
     assert "segredo-um" not in stored[0]
     assert "senha-um" not in stored[1]
+
+
+def test_central_users_are_isolated_by_organization(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'saas-central-users.db'}"
+    users = CentralUserStore(database_url)
+    first = users.create(
+        "provedor-um", "Atendente Um", "atendimento", "Senha@123", "attendant"
+    )
+    second = users.create(
+        "provedor-dois", "Atendente Dois", "atendimento", "Senha@456", "viewer"
+    )
+
+    assert users.authenticate("provedor-um", "atendimento", "Senha@123")["id"] == first["id"]
+    assert users.authenticate("provedor-dois", "atendimento", "Senha@456")["id"] == second["id"]
+    assert users.authenticate("provedor-um", "atendimento", "Senha@456") is None
+    assert [item["id"] for item in users.list_all("provedor-um")] == [first["id"]]

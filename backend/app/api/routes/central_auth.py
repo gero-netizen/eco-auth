@@ -6,6 +6,7 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.core.central_user_store import central_user_store
 from app.core.config import get_settings
 from app.core.organization_store import organization_store
 from app.core.tenant_context import set_current_organization
@@ -19,8 +20,11 @@ def _signature(value: str) -> str:
     return hmac.new(secret, value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _new_session(username: str, organization_id: str) -> str:
-    payload = f"{organization_id}:{username}:{int(time.time()) + 8 * 60 * 60}"
+def _new_session(user: dict) -> str:
+    payload = (
+        f"{user['organization_id']}:{user['id']}:{user['username']}:"
+        f"{user['role']}:{int(time.time()) + 8 * 60 * 60}"
+    )
     return f"{payload}:{_signature(payload)}"
 
 
@@ -28,19 +32,25 @@ def _valid_session(value: str | None) -> dict | None:
     if not value:
         return None
     try:
-        organization_id, username, expires, signature = value.rsplit(":", 3)
-        payload = f"{organization_id}:{username}:{expires}"
-        valid = (
-            username == get_settings().central_username
-            and int(expires) >= int(time.time())
-            and hmac.compare_digest(signature, _signature(payload))
+        organization_id, user_id, username, role, expires, signature = value.rsplit(
+            ":", 5
+        )
+        payload = f"{organization_id}:{user_id}:{username}:{role}:{expires}"
+        valid = int(expires) >= int(time.time()) and hmac.compare_digest(
+            signature, _signature(payload)
         )
         if not valid:
             return None
         organization = organization_store.get_active(organization_id)
-        if organization is None:
+        user = central_user_store.get_active(user_id, organization_id)
+        if (
+            organization is None
+            or user is None
+            or user["username"] != username
+            or user["role"] != role
+        ):
             return None
-        return {"username": username, "organization": organization}
+        return {"user": user, "username": username, "organization": organization}
     except (TypeError, ValueError):
         return None
 
@@ -57,18 +67,29 @@ def require_central_session(request: Request) -> dict:
     return session
 
 
+def require_central_roles(*allowed_roles: str):
+    def dependency(request: Request) -> dict:
+        session = require_central_session(request)
+        if session["user"]["role"] not in allowed_roles:
+            raise HTTPException(403, "central_role_not_allowed")
+        return session
+
+    return dependency
+
+
 @router.get("/central/login", response_class=HTMLResponse)
 async def central_login_page(request: Request, error: bool = False):
     if _valid_session(request.cookies.get(_cookie_name)):
         return RedirectResponse("/central", status_code=303)
     error_message = (
-        "<p class='error'>Usuário ou senha inválidos.</p>" if error else ""
+        "<p class='error'>Provedor, usuário ou senha inválidos.</p>" if error else ""
     )
+    default_slug = get_settings().default_organization_slug
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar na Central</title>
 <style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}}main{{width:min(390px,90vw);background:white;padding:28px;border-radius:16px;box-shadow:0 4px 22px #17332f22}}h1{{color:#075e54}}form,label{{display:grid;gap:8px}}form{{gap:16px}}input{{padding:11px;border:1px solid #aac0bb;border-radius:8px;font:inherit}}button{{padding:12px;border:0;border-radius:8px;background:#075e54;color:white;font-weight:bold;cursor:pointer}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:10px}}.error{{color:#a32616}}</style></head>
-<body><main><h1>Central G7 Networks</h1><p class="simulation"><b>AMBIENTE DE BANCADA</b></p>{error_message}
-<form method="post" action="/central/login"><label>Usuário<input name="username" autocomplete="username" required></label><label>Senha<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">ENTRAR</button></form></main></body></html>"""
+<body><main><h1>Central do Provedor</h1><p class="simulation"><b>AMBIENTE DE BANCADA</b></p>{error_message}
+<form method="post" action="/central/login"><label>Provedor<input name="organization_slug" value="{default_slug}" required></label><label>Usuário<input name="username" autocomplete="username" required></label><label>Senha<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">ENTRAR</button></form></main></body></html>"""
 
 
 @router.post("/central/login")
@@ -76,24 +97,25 @@ async def central_login(request: Request) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     username = fields.get("username", [""])[0]
     password = fields.get("password", [""])[0]
-    settings = get_settings()
-    valid = (
-        bool(settings.central_username)
-        and bool(settings.central_password)
-        and hmac.compare_digest(username, settings.central_username)
-        and hmac.compare_digest(password, settings.central_password)
+    organization_slug = fields.get(
+        "organization_slug", [get_settings().default_organization_slug]
+    )[0]
+    organization = organization_store.get_active_by_slug(organization_slug)
+    user = (
+        central_user_store.authenticate(organization["id"], username, password)
+        if organization
+        else None
     )
-    if not valid:
+    if user is None:
         return RedirectResponse("/central/login?error=true", status_code=303)
     response = RedirectResponse("/central", status_code=303)
-    organization = organization_store.get_default()
     response.set_cookie(
         _cookie_name,
-        _new_session(username, organization["id"]),
+        _new_session(user),
         max_age=8 * 60 * 60,
         httponly=True,
         samesite="strict",
-        secure=settings.app_env == "production",
+        secure=get_settings().app_env == "production",
     )
     return response
 
