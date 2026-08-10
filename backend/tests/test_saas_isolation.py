@@ -23,6 +23,8 @@ from app.api.routes.support import (
     list_support_requests,
     save_rating,
 )
+from app.core.provisioning_store import ProvisioningStore
+from app.api.routes.evidence import EquipmentRequest, link_equipment, list_equipment
 from app.domain.models import OperationResult
 from app.api.routes.financial import list_financial_accounts
 from app.api.routes.network import (
@@ -351,3 +353,35 @@ def test_support_requests_are_isolated_by_organization() -> None:
                 "DELETE FROM support_requests WHERE organization_id IN (?, ?)",
                 (first_id, second_id),
             )
+
+
+def test_provisioning_is_isolated_by_organization(tmp_path) -> None:
+    store = ProvisioningStore(f"sqlite:///{tmp_path / 'provisioning.db'}")
+    result = {"status": "provisioned", "serial": "ONU-001"}
+    store.save("operation-1", "os-1", "ONU-001", "500M", result, "provider-1")
+
+    assert store.get("operation-1", "provider-1") == result
+    assert store.get("operation-1", "provider-2") is None
+    assert len(store.list_for_work_order("os-1", "provider-1")) == 1
+    assert store.list_for_work_order("os-1", "provider-2") == []
+
+
+def test_equipment_scans_are_isolated_by_organization() -> None:
+    first_id = f"equipment-first-{uuid4()}"
+    second_id = f"equipment-second-{uuid4()}"
+    scan_id = uuid4()
+    database_path = get_settings().database_url.removeprefix("sqlite:///")
+    try:
+        set_current_organization(first_id)
+        asyncio.run(
+            link_equipment("work-order-1", scan_id, EquipmentRequest(serial="ONU-001"))
+        )
+        assert len(list_equipment("work-order-1", first_id)) == 1
+        assert list_equipment("work-order-1", second_id) == []
+    finally:
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "DELETE FROM equipment_scans WHERE organization_id = ?",
+                (first_id,),
+            )
+        set_current_organization(get_settings().default_organization_id)

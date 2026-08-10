@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.technician_auth import require_technician
 from app.core.config import get_settings
+from app.core.tenant_context import get_current_organization
 
 router = APIRouter(
     prefix="/work-orders",
@@ -27,16 +28,38 @@ _database_path = Path(_database_url.removeprefix("sqlite:///"))
 def _initialize_equipment_store() -> None:
     _database_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(_database_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(equipment_scans)")
+        }
+        if columns and "organization_id" not in columns:
+            connection.execute(
+                "ALTER TABLE equipment_scans RENAME TO equipment_scans_legacy"
+            )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS equipment_scans (
-                scan_id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                scan_id TEXT NOT NULL,
                 work_order_id TEXT NOT NULL,
                 serial TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (organization_id, scan_id)
             )
             """
         )
+        if columns and "organization_id" not in columns:
+            connection.execute(
+                """
+                INSERT INTO equipment_scans (
+                    organization_id, scan_id, work_order_id, serial, created_at
+                )
+                SELECT ?, scan_id, work_order_id, serial, created_at
+                FROM equipment_scans_legacy
+                """,
+                (get_settings().default_organization_id,),
+            )
+            connection.execute("DROP TABLE equipment_scans_legacy")
 
 
 _initialize_equipment_store()
@@ -48,9 +71,31 @@ def _validated_work_order_id(value: str) -> str:
     return value
 
 
-def list_evidence(work_order_id: str) -> list[dict[str, str]]:
+def _evidence_directory(
+    work_order_id: str,
+    organization_id: str,
+    allow_legacy: bool = False,
+) -> Path:
+    tenant_directory = _upload_root / organization_id / work_order_id
+    legacy_directory = _upload_root / work_order_id
+    if (
+        allow_legacy
+        and organization_id == get_settings().default_organization_id
+        and not tenant_directory.exists()
+        and legacy_directory.exists()
+    ):
+        return legacy_directory
+    return tenant_directory
+
+
+def list_evidence(
+    work_order_id: str, organization_id: str | None = None
+) -> list[dict[str, str]]:
     safe_order_id = _validated_work_order_id(work_order_id)
-    directory = _upload_root / safe_order_id
+    current_organization_id = organization_id or get_current_organization()
+    directory = _evidence_directory(
+        safe_order_id, current_organization_id, allow_legacy=True
+    )
     if not directory.exists():
         return []
     return [
@@ -67,15 +112,18 @@ def list_evidence(work_order_id: str) -> list[dict[str, str]]:
     ]
 
 
-def list_equipment(work_order_id: str) -> list[dict[str, str]]:
+def list_equipment(
+    work_order_id: str, organization_id: str | None = None
+) -> list[dict[str, str]]:
     _validated_work_order_id(work_order_id)
+    current_organization_id = organization_id or get_current_organization()
     with sqlite3.connect(_database_path) as connection:
         rows = connection.execute(
             """
             SELECT scan_id, serial FROM equipment_scans
-            WHERE work_order_id = ? ORDER BY created_at
+            WHERE organization_id = ? AND work_order_id = ? ORDER BY created_at
             """,
-            (work_order_id,),
+            (current_organization_id, work_order_id),
         ).fetchall()
     return [{"id": row[0], "serial": row[1]} for row in rows]
 
@@ -91,7 +139,9 @@ async def evidence_summary(work_order_id: str) -> dict:
 @router.get("/{work_order_id}/evidence/{evidence_id}/file", response_class=FileResponse)
 async def download_evidence(work_order_id: str, evidence_id: UUID) -> FileResponse:
     safe_order_id = _validated_work_order_id(work_order_id)
-    directory = _upload_root / safe_order_id
+    directory = _evidence_directory(
+        safe_order_id, get_current_organization(), allow_legacy=True
+    )
     for extension, media_type in ((".jpg", "image/jpeg"), (".png", "image/png")):
         target = directory / f"{evidence_id}{extension}"
         if target.is_file():
@@ -117,7 +167,7 @@ async def upload_evidence(
         raise HTTPException(422, "sha256 mismatch")
 
     extension = ".png" if category == "customer_signature" else ".jpg"
-    directory = _upload_root / safe_order_id
+    directory = _evidence_directory(safe_order_id, get_current_organization())
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"{evidence_id}{extension}"
 
@@ -144,20 +194,25 @@ async def link_equipment(
     _validated_work_order_id(work_order_id)
     key = str(scan_id)
     normalized_serial = payload.serial.strip().upper()
+    organization_id = get_current_organization()
     with sqlite3.connect(_database_path) as connection:
         existing = connection.execute(
-            "SELECT work_order_id, serial FROM equipment_scans WHERE scan_id = ?",
-            (key,),
+            """
+            SELECT work_order_id, serial FROM equipment_scans
+            WHERE organization_id = ? AND scan_id = ?
+            """,
+            (organization_id, key),
         ).fetchone()
         if existing is not None:
-            if existing != (work_order_id, normalized_serial):
+            if tuple(existing) != (work_order_id, normalized_serial):
                 raise HTTPException(409, "scan id already exists with another serial")
             return {"id": key, "status": "duplicate", "serial": normalized_serial}
         connection.execute(
             """
-            INSERT INTO equipment_scans (scan_id, work_order_id, serial)
-            VALUES (?, ?, ?)
+            INSERT INTO equipment_scans (
+                organization_id, scan_id, work_order_id, serial
+            ) VALUES (?, ?, ?, ?)
             """,
-            (key, work_order_id, normalized_serial),
+            (organization_id, key, work_order_id, normalized_serial),
         )
     return {"id": key, "status": "linked", "serial": normalized_serial}

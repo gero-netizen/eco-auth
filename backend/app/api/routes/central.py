@@ -61,10 +61,8 @@ async def central_dashboard(
     inventory_movements = simulated_inventory_gateway.list_movements(
         organization_id=organization_id
     )
-    provisioning = (
-        provisioning_store.list_for_work_order("sim-os-1")
-        if is_default_organization
-        else []
+    provisioning = provisioning_store.list_for_work_order(
+        "sim-os-1", organization_id
     )
     financial_accounts = list_financial_accounts(organization_id)
     messages = list_simulated_messages(organization_id)[:5]
@@ -1713,13 +1711,19 @@ async def central_toggle_technician(
 
 
 @router.get("/central/work-orders/{work_order_id}/evidence", response_class=HTMLResponse)
-async def central_evidence_gallery(work_order_id: str) -> str:
-    orders = await simulated_mkauth_gateway.list_work_orders(None)
+async def central_evidence_gallery(
+    work_order_id: str,
+    session: dict = Depends(require_central_session),
+) -> str:
+    organization_id = session["organization"]["id"]
+    orders = await simulated_mkauth_gateway.list_work_orders(
+        None, organization_id
+    )
     order = next((item for item in orders if item.id == work_order_id), None)
     if order is None:
         raise HTTPException(404, "work_order_not_found")
-    files = list_evidence(work_order_id)
-    equipment = list_equipment(work_order_id)
+    files = list_evidence(work_order_id, organization_id)
+    equipment = list_equipment(work_order_id, organization_id)
     gallery = "".join(
         f"<figure><a href='{escape(item['url'])}' target='_blank'>"
         f"<img src='{escape(item['url'])}' alt='{escape(item['category'])}'></a>"
@@ -1745,13 +1749,18 @@ async def central_work_order_report(
     work_order_id: str,
     session: dict = Depends(require_central_session),
 ) -> str:
-    orders = await simulated_mkauth_gateway.list_work_orders(None)
+    organization_id = session["organization"]["id"]
+    orders = await simulated_mkauth_gateway.list_work_orders(
+        None, organization_id
+    )
     order = next((item for item in orders if item.id == work_order_id), None)
     if order is None:
         raise HTTPException(404, "work_order_not_found")
-    files = list_evidence(work_order_id)
-    equipment = list_equipment(work_order_id)
-    provisioning = provisioning_store.list_for_work_order(work_order_id)
+    files = list_evidence(work_order_id, organization_id)
+    equipment = list_equipment(work_order_id, organization_id)
+    provisioning = provisioning_store.list_for_work_order(
+        work_order_id, organization_id
+    )
     material_movements = simulated_inventory_gateway.list_movements(
         work_order_id, session["organization"]["id"]
     )
@@ -1803,4 +1812,4 @@ async def central_work_order_report(
 <section><h2>Equipamentos vinculados</h2><table><thead><tr><th>Número de série</th><th>Identificador</th></tr></thead><tbody>{equipment_rows}</tbody></table></section>
 <section><h2>Materiais utilizados</h2><table><thead><tr><th>Item</th><th>Quantidade</th><th>Data UTC</th></tr></thead><tbody>{material_rows}</tbody></table></section>
 <section><h2>Provisionamento de ONU</h2><table><thead><tr><th>Serial</th><th>Perfil</th><th>Sinal</th><th>Data UTC</th></tr></thead><tbody>{provisioning_rows}</tbody></table></section>
-<footer>ISP Field • G7 Networks • Documento de ambiente simulado</footer></main></body></html>"""
+<footer>ISP Field • {escape(session['organization']['name'])} • Documento de ambiente simulado</footer></main></body></html>"""
