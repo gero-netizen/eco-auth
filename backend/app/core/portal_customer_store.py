@@ -31,6 +31,9 @@ class PortalCustomerStore:
                 )
                 """
             )
+            connection.execute(
+                "DELETE FROM portal_customers WHERE id = 'sim-customer-1'"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path, timeout=10)
@@ -55,30 +58,6 @@ class PortalCustomerStore:
             return hmac.compare_digest(current, expected)
         except (TypeError, ValueError):
             return False
-
-    def ensure_demo(self, organization_id: str, organization_name: str) -> None:
-        with self._connect() as connection:
-            existing = connection.execute(
-                """
-                SELECT 1 FROM portal_customers
-                WHERE organization_id = ? AND lower(username) = 'cliente'
-                """,
-                (organization_id,),
-            ).fetchone()
-            if existing is None:
-                connection.execute(
-                    """
-                    INSERT INTO portal_customers (
-                        id, organization_id, name, username, password_hash
-                    ) VALUES (?, ?, ?, 'cliente', ?)
-                    """,
-                    (
-                        "sim-customer-1",
-                        organization_id,
-                        f"Cliente de Bancada — {organization_name}",
-                        self._hash_password("Cliente@2026"),
-                    ),
-                )
 
     def authenticate(
         self, organization_id: str, username: str, password: str

@@ -273,7 +273,6 @@ async def central_dashboard(
             f"<label>Perfil<select name='role' required>{role_options}</select></label>"
             "<button type='submit'>CADASTRAR</button></form>"
         )
-    portal_customer_store.ensure_demo(organization_id, session["organization"]["name"])
     portal_customers = portal_customer_store.list_all(organization_id)
     portal_customer_rows = "".join(
         f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"

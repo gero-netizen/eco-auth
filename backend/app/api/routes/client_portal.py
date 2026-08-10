@@ -63,7 +63,6 @@ async def portal_login_page(
     organization = organization_store.get_active_by_slug(organization_slug)
     if organization is None:
         raise HTTPException(404, "organization_not_found")
-    portal_customer_store.ensure_demo(organization["id"], organization["name"])
     error_message = (
         "<p class='error'>Usuário ou senha inválidos.</p>" if error else ""
     )
@@ -71,7 +70,7 @@ async def portal_login_page(
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar no portal</title>
 <style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}}main{{width:min(390px,90vw);background:white;padding:28px;border-radius:16px;box-shadow:0 4px 22px #17332f22}}h1{{color:#075e54}}form,label{{display:grid;gap:8px}}form{{gap:16px}}input{{padding:11px;border:1px solid #aac0bb;border-radius:8px;font:inherit}}button{{padding:12px;border:0;border-radius:8px;background:#075e54;color:white;font-weight:bold;cursor:pointer}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:10px}}.error{{color:#a32616}}</style></head>
 <body><main><h1>{escape(organization['name'])}</h1><p>Portal do Cliente</p>
-<p class="simulation"><b>BANCADA:</b> use cliente / Cliente@2026</p>{error_message}
+<p class="simulation"><b>ACESSO:</b> use as credenciais fornecidas pelo seu provedor.</p>{error_message}
 <form method="post" action="/portal/{escape(organization['slug'])}/login"><label>Usuário<input name="username" autocomplete="username" required></label><label>Senha<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">ENTRAR</button></form></main></body></html>"""
 
 
@@ -82,7 +81,6 @@ async def portal_login(
     organization = organization_store.get_active_by_slug(organization_slug)
     if organization is None:
         raise HTTPException(404, "organization_not_found")
-    portal_customer_store.ensure_demo(organization["id"], organization["name"])
     fields = parse_qs((await request.body()).decode("utf-8"))
     customer = portal_customer_store.authenticate(
         organization["id"],

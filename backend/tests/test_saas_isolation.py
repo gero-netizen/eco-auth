@@ -412,8 +412,10 @@ def test_olt_simulator_state_is_isolated_by_organization() -> None:
 
 def test_portal_customers_are_isolated_by_organization(tmp_path) -> None:
     store = PortalCustomerStore(f"sqlite:///{tmp_path / 'portal-customers.db'}")
-    store.ensure_demo("provider-1", "Provedor Um")
-    store.ensure_demo("provider-2", "Provedor Dois")
+    first_created = store.create(
+        "provider-1", "Cliente Um", "cliente", "Cliente@2026"
+    )
+    store.create("provider-2", "Cliente Dois", "cliente", "Cliente@2026")
 
     first = store.authenticate("provider-1", "cliente", "Cliente@2026")
     second = store.authenticate("provider-2", "cliente", "Cliente@2026")
@@ -422,7 +424,7 @@ def test_portal_customers_are_isolated_by_organization(tmp_path) -> None:
     assert second is not None
     assert first["organization_id"] == "provider-1"
     assert second["organization_id"] == "provider-2"
-    assert store.get_active("provider-2", first["id"])["organization_id"] == "provider-2"
+    assert store.get_active("provider-2", first_created["id"]) is None
     assert store.authenticate("provider-1", "cliente", "senha-errada") is None
 
 

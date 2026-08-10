@@ -312,6 +312,13 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "window.setInterval" not in response.text
 
 
+def test_portal_login_does_not_publish_fixed_credentials() -> None:
+    response = TestClient(app).get("/portal/g7-networks/login")
+    assert response.status_code == 200
+    assert "credenciais fornecidas pelo seu provedor" in response.text
+    assert "Cliente@2026" not in response.text
+
+
 def test_mkauth_probe_remains_read_only_for_the_current_tenant() -> None:
     response = client.get("/api/v1/integrations/mkauth/probe")
     assert response.status_code == 200
