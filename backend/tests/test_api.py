@@ -425,7 +425,8 @@ def test_client_support_request_can_be_converted_to_a_work_order() -> None:
     portal = client.get("/cliente")
     assert "Acompanhe meus chamados" in portal.text
     assert "OS criada" in portal.text
-    assert 'http-equiv="refresh" content="15"' in portal.text
+    assert 'http-equiv="refresh"' not in portal.text
+    assert "ATUALIZAR ANDAMENTO" in portal.text
     assert f"href='/cliente/chamados/{request_id}'" in portal.text
 
     detail = client.get(f"/cliente/chamados/{request_id}")

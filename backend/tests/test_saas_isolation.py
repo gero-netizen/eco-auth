@@ -18,6 +18,11 @@ from app.integrations.mkauth.inventory import SimulatedInventoryGateway
 from app.core.sync_store import SyncOperationStore
 from app.core.pix_simulation_store import PixSimulationStore
 from app.core.trust_unlock_store import TrustUnlockStore
+from app.api.routes.support import (
+    create_support_request,
+    list_support_requests,
+    save_rating,
+)
 from app.domain.models import OperationResult
 from app.api.routes.financial import list_financial_accounts
 from app.api.routes.network import (
@@ -315,3 +320,34 @@ def test_financial_histories_are_isolated_by_organization(tmp_path) -> None:
         assert trust_store.get_active(unlock["id"]) is None
     finally:
         set_current_organization(get_settings().default_organization_id)
+
+
+def test_support_requests_are_isolated_by_organization() -> None:
+    first_id = f"support-first-{uuid4()}"
+    second_id = f"support-second-{uuid4()}"
+    first_request_id = create_support_request(
+        "customer-1", "Sem conexão", "Teste do provedor um", first_id
+    )
+    second_request_id = create_support_request(
+        "customer-1", "Sinal baixo", "Teste do provedor dois", second_id
+    )
+    database_path = get_settings().database_url.removeprefix("sqlite:///")
+    try:
+        assert [item["id"] for item in list_support_requests(
+            organization_id=first_id
+        )] == [first_request_id]
+        assert [item["id"] for item in list_support_requests(
+            organization_id=second_id
+        )] == [second_request_id]
+        try:
+            save_rating(first_request_id, 5, "Ótimo", second_id)
+        except Exception as error:
+            assert getattr(error, "status_code", None) == 404
+        else:
+            raise AssertionError("cross-organization support access was allowed")
+    finally:
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "DELETE FROM support_requests WHERE organization_id IN (?, ?)",
+                (first_id, second_id),
+            )

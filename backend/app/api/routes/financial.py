@@ -40,6 +40,26 @@ def list_financial_accounts(organization_id: str | None = None) -> list[dict]:
     return list(_organization_accounts(organization_id).values())
 
 
+def ensure_simulated_account(
+    organization_id: str,
+    organization_name: str,
+    customer_id: str = "sim-customer-1",
+) -> dict:
+    accounts = _organization_accounts(organization_id)
+    if customer_id not in accounts:
+        accounts[customer_id] = {
+            "id": customer_id,
+            "customer_name": f"Cliente de Bancada — {organization_name}",
+            "access_status": "blocked",
+            "invoice_id": f"sim-invoice-{organization_id}",
+            "invoice_amount": 129.90,
+            "invoice_status": "overdue",
+            "trust_until": None,
+            "simulated": True,
+        }
+    return accounts[customer_id]
+
+
 def reset_simulated_account(
     customer_id: str, organization_id: str | None = None
 ) -> dict:

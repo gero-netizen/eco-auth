@@ -68,7 +68,7 @@ async def central_dashboard(
     )
     financial_accounts = list_financial_accounts(organization_id)
     messages = list_simulated_messages(organization_id)[:5]
-    support_requests = list_support_requests() if is_default_organization else []
+    support_requests = list_support_requests(organization_id=organization_id)
     network_alerts = list_active_alerts(organization_id)
     technicians = technician_store.list_all(organization_id)
     integration_config_store.ensure_unconfigured(organization_id)
