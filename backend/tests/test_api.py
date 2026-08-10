@@ -92,6 +92,10 @@ def test_viewer_cannot_manage_central_users() -> None:
         assert login.status_code == 303
         assert viewer.get("/api/v1/saas/users").status_code == 403
         assert viewer.get("/api/v1/saas/users/current").status_code == 200
+        dashboard = viewer.get("/central")
+        assert dashboard.status_code == 200
+        assert "Somente leitura" in dashboard.text
+        assert "action='/central/users'" not in dashboard.text
     finally:
         central_user_store.delete(user_id, "g7-networks")
 
@@ -203,8 +207,10 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert response.status_code == 200
     assert "Painel da Central" in response.text
     assert "MODO SIMULADO" in response.text
-    assert response.text.count('class="menu-button') == 17
-    assert response.text.count('data-module=') == 17
+    assert response.text.count('class="menu-button') == 18
+    assert response.text.count('data-module=') == 18
+    assert "Usuários da central" in response.text
+    assert "central-users" in response.text
     assert "central-active-module" in response.text
     assert "/api/v1/integrations/mkauth/plans" in response.text
     assert "mkauth-plans-body" in response.text

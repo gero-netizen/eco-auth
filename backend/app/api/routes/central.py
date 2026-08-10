@@ -14,7 +14,8 @@ from app.api.routes.financial import simulated_financial_accounts
 from app.api.routes.notifications import simulated_messages
 from app.api.routes.support import list_support_requests
 from app.api.routes.network import list_active_alerts
-from app.api.routes.central_auth import require_central_session
+from app.api.routes.central_auth import require_central_roles, require_central_session
+from app.core.central_user_store import CENTRAL_USER_ROLES, central_user_store
 from app.core.technician_store import technician_store
 from app.core.config import get_settings
 from app.core.integration_config_store import get_integration_settings
@@ -194,6 +195,51 @@ async def central_dashboard(
         f"{'DESATIVAR' if item['active'] else 'ATIVAR'}</button></form></td></tr>"
         for item in technicians
     )
+    current_user = session["user"]
+    can_manage_users = current_user["role"] in {"owner", "admin"}
+    central_users = (
+        central_user_store.list_all(organization_id)
+        if can_manage_users
+        else [current_user]
+    )
+    role_labels = {
+        "owner": "Proprietário",
+        "admin": "Administrador",
+        "attendant": "Atendente",
+        "viewer": "Somente leitura",
+    }
+    central_user_rows = "".join(
+        f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
+        f"<td>{escape(role_labels.get(item['role'], item['role']))}</td>"
+        f"<td>{'Ativo' if item['active'] else 'Inativo'}</td><td>"
+        + (
+            f"<form method='post' action='/central/users/{escape(item['id'])}/toggle'>"
+            f"<input type='hidden' name='active' value='{'0' if item['active'] else '1'}'>"
+            f"<button class='{'secondary' if item['active'] else ''}' type='submit'>"
+            f"{'DESATIVAR' if item['active'] else 'ATIVAR'}</button></form>"
+            if can_manage_users and item["id"] != current_user["id"]
+            else "-"
+        )
+        + "</td></tr>"
+        for item in central_users
+    )
+    central_user_form = ""
+    if can_manage_users:
+        allowed_roles = ["admin", "attendant", "viewer"]
+        if current_user["role"] == "owner":
+            allowed_roles.insert(0, "owner")
+        role_options = "".join(
+            f"<option value='{role}'>{escape(role_labels[role])}</option>"
+            for role in allowed_roles
+        )
+        central_user_form = (
+            "<form class='create-order' method='post' action='/central/users'>"
+            "<label>Nome<input name='name' minlength='3' maxlength='100' required></label>"
+            "<label>Usuário<input name='username' minlength='3' maxlength='80' required></label>"
+            "<label>Senha inicial<input name='password' type='password' minlength='8' maxlength='200' required></label>"
+            f"<label>Perfil<select name='role' required>{role_options}</select></label>"
+            "<button type='submit'>CADASTRAR</button></form>"
+        )
     return f"""<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -265,6 +311,7 @@ async def central_dashboard(
         <button class="menu-button" type="button" data-target="inventory">Estoque do técnico</button>
         <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
         <button class="menu-button" type="button" data-target="technicians">Técnicos</button>
+        <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
         <button class="menu-button" type="button" data-target="network">Monitoramento da rede</button>
         <button class="menu-button" type="button" data-target="routeros-diagnostic">Diagnóstico PPPoE/RADIUS</button>
         <button class="menu-button" type="button" data-target="provisioning">Últimos provisionamentos</button>
@@ -395,6 +442,12 @@ async def central_dashboard(
           <button type="submit">CADASTRAR</button>
         </form>
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{technician_rows}</tbody></table>
+      </section>
+      <section class="module-panel" data-module="central-users">
+        <h2>Usuários da central</h2>
+        <p>Organização: <b>{escape(session['organization']['name'])}</b> • Seu perfil: <b>{escape(role_labels[current_user['role']])}</b></p>
+        {central_user_form}
+        <table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{central_user_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="network"><h2>Monitoramento da rede</h2>
         <p class="alert"><b>{len(network_alerts)} ocorrência(s) ativa(s)</b></p>
@@ -1262,6 +1315,61 @@ async def central_create_technician(
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     return RedirectResponse("/central", status_code=303)
+
+
+@router.post("/central/users", include_in_schema=False)
+async def central_create_user(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    name = fields.get("name", [""])[0].strip()
+    username = fields.get("username", [""])[0].strip().casefold()
+    password = fields.get("password", [""])[0]
+    role = fields.get("role", [""])[0]
+    if (
+        len(name) < 3
+        or len(username) < 3
+        or len(password) < 8
+        or role not in CENTRAL_USER_ROLES
+    ):
+        raise HTTPException(422, "invalid_central_user_data")
+    if session["user"]["role"] == "admin" and role == "owner":
+        raise HTTPException(403, "only_owner_can_create_owner")
+    try:
+        central_user_store.create(
+            session["organization"]["id"], name, username, password, role
+        )
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return RedirectResponse("/central#central-users", status_code=303)
+
+
+@router.post("/central/users/{user_id}/toggle", include_in_schema=False)
+async def central_toggle_user(
+    user_id: str,
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    if user_id == session["user"]["id"]:
+        raise HTTPException(409, "cannot_disable_current_user")
+    organization_id = session["organization"]["id"]
+    target = next(
+        (
+            item
+            for item in central_user_store.list_all(organization_id)
+            if item["id"] == user_id
+        ),
+        None,
+    )
+    if target is None:
+        raise HTTPException(404, "central_user_not_found")
+    if session["user"]["role"] == "admin" and target["role"] == "owner":
+        raise HTTPException(403, "admin_cannot_manage_owner")
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    active = fields.get("active", ["0"])[0] == "1"
+    central_user_store.set_active(user_id, organization_id, active)
+    return RedirectResponse("/central#central-users", status_code=303)
 
 
 @router.post(

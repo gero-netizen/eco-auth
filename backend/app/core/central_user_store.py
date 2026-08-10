@@ -186,6 +186,18 @@ class CentralUserStore:
                 (user_id, organization_id),
             )
 
+    def set_active(self, user_id: str, organization_id: str, active: bool) -> None:
+        with self._connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE central_users SET active = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (int(active), user_id, organization_id),
+            )
+        if updated.rowcount == 0:
+            raise KeyError("central_user_not_found")
+
     @staticmethod
     def _public(row: sqlite3.Row) -> dict:
         return {
