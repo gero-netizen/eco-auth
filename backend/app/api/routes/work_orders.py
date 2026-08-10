@@ -6,6 +6,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.technician_auth import require_technician
+from app.api.routes.central_auth import require_central_session
 from app.core.config import get_settings
 from app.core.sync_store import SyncOperationStore
 from app.domain.models import WorkOrder
@@ -80,6 +81,7 @@ async def create_work_order(request: CreateWorkOrderRequest) -> WorkOrder:
 @router.post("/from-central", include_in_schema=False)
 async def create_work_order_from_central(
     request: Request,
+    session: dict = Depends(require_central_session),
 ) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     customer_name = fields.get("customer_name", [""])[0]

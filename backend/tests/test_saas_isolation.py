@@ -1,5 +1,9 @@
+import asyncio
+
 from app.core.organization_store import OrganizationStore
 from app.core.technician_store import TechnicianStore
+from app.domain.models import WorkOrderStatus
+from app.integrations.mkauth.client import SimulatedMkAuthGateway
 
 
 def test_technicians_are_isolated_by_organization(tmp_path) -> None:
@@ -26,3 +30,41 @@ def test_technicians_are_isolated_by_organization(tmp_path) -> None:
     assert [item["id"] for item in technicians.list_all(second["id"])] == [
         second_technician["id"]
     ]
+
+
+def test_work_orders_are_isolated_by_organization(tmp_path) -> None:
+    asyncio.run(_assert_work_order_isolation(tmp_path))
+
+
+async def _assert_work_order_isolation(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'saas-orders.db'}"
+    gateway = SimulatedMkAuthGateway(database_url)
+
+    first_order = await gateway.create_work_order(
+        "Cliente Provedor Um",
+        "Rua Um, 10",
+        organization_id="provedor-um",
+    )
+    second_order = await gateway.create_work_order(
+        "Cliente Provedor Dois",
+        "Rua Dois, 20",
+        organization_id="provedor-dois",
+    )
+
+    first_orders = await gateway.list_work_orders(None, "provedor-um")
+    second_orders = await gateway.list_work_orders(None, "provedor-dois")
+
+    assert [order.id for order in first_orders] == [first_order.id]
+    assert [order.id for order in second_orders] == [second_order.id]
+
+    try:
+        await gateway.transition_work_order(
+            first_order.id,
+            WorkOrderStatus.TRAVELING,
+            first_order.version,
+            "provedor-dois",
+        )
+    except KeyError as error:
+        assert error.args[0] == "work_order_not_found"
+    else:
+        raise AssertionError("cross-organization work order access was allowed")

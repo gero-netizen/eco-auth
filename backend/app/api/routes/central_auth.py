@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.core.config import get_settings
 from app.core.organization_store import organization_store
+from app.core.tenant_context import set_current_organization
 
 router = APIRouter(tags=["central-authentication"])
 _cookie_name = "isp_central_session"
@@ -52,6 +53,7 @@ def require_central_session(request: Request) -> dict:
             detail="central_login_required",
             headers={"Location": "/central/login"},
         )
+    set_current_organization(session["organization"]["id"])
     return session
 
 

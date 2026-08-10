@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.core.config import get_settings
 from app.core.technician_store import technician_store
 from app.core.organization_store import organization_store
+from app.core.tenant_context import set_current_organization
 
 router = APIRouter(prefix="/auth", tags=["technician-authentication"])
 
@@ -52,6 +53,7 @@ def require_technician(
     technician = _valid_token(token) if scheme.lower() == "bearer" else None
     if technician is None:
         raise HTTPException(401, "technician_authentication_required")
+    set_current_organization(technician["organization_id"])
     return technician
 
 

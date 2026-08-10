@@ -4,18 +4,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.config import get_settings
+from app.core.tenant_context import get_current_organization
 from app.domain.models import WorkOrder, WorkOrderStatus
 
 
 class MkAuthGateway(ABC):
     @abstractmethod
-    async def list_work_orders(self, technician_id: str | None) -> list[WorkOrder]: ...
+    async def list_work_orders(
+        self, technician_id: str | None, organization_id: str | None = None
+    ) -> list[WorkOrder]: ...
 
 
 class SimulatedMkAuthGateway(MkAuthGateway):
-    def __init__(self) -> None:
+    def __init__(self, database_url: str | None = None) -> None:
         self._database_path = Path(
-            get_settings().database_url.removeprefix("sqlite:///")
+            (database_url or get_settings().database_url).removeprefix("sqlite:///")
         )
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
@@ -73,6 +76,18 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                 connection.execute(
                     "ALTER TABLE simulated_work_orders ADD COLUMN deletion_reason TEXT"
                 )
+            if "organization_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE simulated_work_orders ADD COLUMN organization_id TEXT"
+                )
+            connection.execute(
+                """
+                UPDATE simulated_work_orders
+                SET organization_id = ?
+                WHERE organization_id IS NULL OR organization_id = ''
+                """,
+                (get_settings().default_organization_id,),
+            )
             order = WorkOrder(
                 id="sim-os-1",
                 code="OS-0001",
@@ -83,10 +98,10 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                 """
                 INSERT OR IGNORE INTO simulated_work_orders (
                     id, code, customer_name, address, status, latitude,
-                    longitude, version, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    longitude, version, updated_at, organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                self._values(order),
+                (*self._values(order), get_settings().default_organization_id),
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -148,16 +163,27 @@ class SimulatedMkAuthGateway(MkAuthGateway):
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
-    async def list_work_orders(self, technician_id: str | None) -> list[WorkOrder]:
+    async def list_work_orders(
+        self, technician_id: str | None, organization_id: str | None = None
+    ) -> list[WorkOrder]:
+        current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             if technician_id is None:
                 rows = connection.execute(
-                    "SELECT * FROM simulated_work_orders ORDER BY code"
+                    """
+                    SELECT * FROM simulated_work_orders
+                    WHERE organization_id = ? ORDER BY code
+                    """,
+                    (current_organization_id,),
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT * FROM simulated_work_orders WHERE technician_id = ? ORDER BY code",
-                    (technician_id,),
+                    """
+                    SELECT * FROM simulated_work_orders
+                    WHERE organization_id = ? AND technician_id = ?
+                    ORDER BY code
+                    """,
+                    (current_organization_id, technician_id),
                 ).fetchall()
         return [self._from_row(row) for row in rows]
 
@@ -172,7 +198,9 @@ class SimulatedMkAuthGateway(MkAuthGateway):
         scheduled_at: datetime | None = None,
         external_customer_id: str | None = None,
         external_ticket_id: str | None = None,
+        organization_id: str | None = None,
     ) -> WorkOrder:
+        current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             sequence = connection.execute(
                 "SELECT COALESCE(MAX(CAST(SUBSTR(code, 4) AS INTEGER)), 0) + 1 FROM simulated_work_orders"
@@ -195,8 +223,9 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                 INSERT INTO simulated_work_orders (
                     id, code, customer_name, address, status, latitude,
                     longitude, version, updated_at, technician_id, priority,
-                    scheduled_at, external_customer_id, external_ticket_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    scheduled_at, external_customer_id, external_ticket_id,
+                    organization_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     *self._values(order),
@@ -205,6 +234,7 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                     scheduled_at.isoformat() if scheduled_at else None,
                     external_customer_id,
                     external_ticket_id,
+                    current_organization_id,
                 ),
             )
         return order
@@ -214,11 +244,16 @@ class SimulatedMkAuthGateway(MkAuthGateway):
         work_order_id: str,
         to_status: WorkOrderStatus,
         base_version: int | None,
+        organization_id: str | None = None,
     ) -> WorkOrder:
+        current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM simulated_work_orders WHERE id = ?",
-                (work_order_id,),
+                """
+                SELECT * FROM simulated_work_orders
+                WHERE id = ? AND organization_id = ?
+                """,
+                (work_order_id, current_organization_id),
             ).fetchone()
         if row is None:
             raise KeyError("work_order_not_found")
@@ -237,7 +272,7 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                 """
                 UPDATE simulated_work_orders
                 SET status = ?, latitude = ?, longitude = ?, version = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND organization_id = ?
                 """,
                 (
                     updated.status.value,
@@ -246,17 +281,25 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                     updated.version,
                     updated.updated_at.isoformat(),
                     updated.id,
+                    current_organization_id,
                 ),
             )
         return updated
 
     async def assign_work_order(
-        self, work_order_id: str, technician_id: str
+        self,
+        work_order_id: str,
+        technician_id: str,
+        organization_id: str | None = None,
     ) -> WorkOrder:
+        current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM simulated_work_orders WHERE id = ?",
-                (work_order_id,),
+                """
+                SELECT * FROM simulated_work_orders
+                WHERE id = ? AND organization_id = ?
+                """,
+                (work_order_id, current_organization_id),
             ).fetchone()
             if row is None:
                 raise KeyError("work_order_not_found")
@@ -274,12 +317,17 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                 }
             )
             connection.execute(
-                "UPDATE simulated_work_orders SET technician_id = ?, version = ?, updated_at = ? WHERE id = ?",
+                """
+                UPDATE simulated_work_orders
+                SET technician_id = ?, version = ?, updated_at = ?
+                WHERE id = ? AND organization_id = ?
+                """,
                 (
                     technician_id,
                     updated.version,
                     updated.updated_at.isoformat(),
                     work_order_id,
+                    current_organization_id,
                 ),
             )
         return updated
@@ -289,11 +337,16 @@ class SimulatedMkAuthGateway(MkAuthGateway):
         work_order_id: str,
         priority: str,
         scheduled_at: datetime | None,
+        organization_id: str | None = None,
     ) -> WorkOrder:
+        current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM simulated_work_orders WHERE id = ?",
-                (work_order_id,),
+                """
+                SELECT * FROM simulated_work_orders
+                WHERE id = ? AND organization_id = ?
+                """,
+                (work_order_id, current_organization_id),
             ).fetchone()
             if row is None:
                 raise KeyError("work_order_not_found")
@@ -315,7 +368,7 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                 """
                 UPDATE simulated_work_orders
                 SET priority = ?, scheduled_at = ?, version = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND organization_id = ?
                 """,
                 (
                     priority,
@@ -323,16 +376,23 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                     updated.version,
                     updated.updated_at.isoformat(),
                     work_order_id,
+                    current_organization_id,
                 ),
             )
         return updated
 
-    async def mark_external_ticket_closed(self, work_order_id: str) -> WorkOrder:
+    async def mark_external_ticket_closed(
+        self, work_order_id: str, organization_id: str | None = None
+    ) -> WorkOrder:
+        current_organization_id = organization_id or get_current_organization()
         closed_at = datetime.now(timezone.utc)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM simulated_work_orders WHERE id = ?",
-                (work_order_id,),
+                """
+                SELECT * FROM simulated_work_orders
+                WHERE id = ? AND organization_id = ?
+                """,
+                (work_order_id, current_organization_id),
             ).fetchone()
             if row is None:
                 raise KeyError("work_order_not_found")
@@ -340,18 +400,28 @@ class SimulatedMkAuthGateway(MkAuthGateway):
             if current.external_ticket_closed_at is not None:
                 raise ValueError("external_ticket_already_closed")
             connection.execute(
-                "UPDATE simulated_work_orders SET external_ticket_closed_at = ? WHERE id = ?",
-                (closed_at.isoformat(), work_order_id),
+                """
+                UPDATE simulated_work_orders SET external_ticket_closed_at = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (closed_at.isoformat(), work_order_id, current_organization_id),
             )
         return current.model_copy(update={"external_ticket_closed_at": closed_at})
 
     async def set_work_order_archived(
-        self, work_order_id: str, archived: bool
+        self,
+        work_order_id: str,
+        archived: bool,
+        organization_id: str | None = None,
     ) -> WorkOrder:
+        current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM simulated_work_orders WHERE id = ?",
-                (work_order_id,),
+                """
+                SELECT * FROM simulated_work_orders
+                WHERE id = ? AND organization_id = ?
+                """,
+                (work_order_id, current_organization_id),
             ).fetchone()
             if row is None:
                 raise KeyError("work_order_not_found")
@@ -369,19 +439,33 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                     raise ValueError("linked_mkauth_ticket_must_be_closed_first")
             archived_at = datetime.now(timezone.utc) if archived else None
             connection.execute(
-                "UPDATE simulated_work_orders SET archived_at = ? WHERE id = ?",
-                (archived_at.isoformat() if archived_at else None, work_order_id),
+                """
+                UPDATE simulated_work_orders SET archived_at = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (
+                    archived_at.isoformat() if archived_at else None,
+                    work_order_id,
+                    current_organization_id,
+                ),
             )
         return current.model_copy(update={"archived_at": archived_at})
 
     async def delete_unstarted_work_order(
-        self, work_order_id: str, reason: str
+        self,
+        work_order_id: str,
+        reason: str,
+        organization_id: str | None = None,
     ) -> WorkOrder:
+        current_organization_id = organization_id or get_current_organization()
         deleted_at = datetime.now(timezone.utc)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM simulated_work_orders WHERE id = ?",
-                (work_order_id,),
+                """
+                SELECT * FROM simulated_work_orders
+                WHERE id = ? AND organization_id = ?
+                """,
+                (work_order_id, current_organization_id),
             ).fetchone()
             if row is None:
                 raise KeyError("work_order_not_found")
@@ -391,8 +475,17 @@ class SimulatedMkAuthGateway(MkAuthGateway):
             if current.status is not WorkOrderStatus.ASSIGNED:
                 raise ValueError("only_unstarted_work_orders_can_be_deleted")
             connection.execute(
-                "UPDATE simulated_work_orders SET deleted_at = ?, deletion_reason = ? WHERE id = ?",
-                (deleted_at.isoformat(), reason, work_order_id),
+                """
+                UPDATE simulated_work_orders
+                SET deleted_at = ?, deletion_reason = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (
+                    deleted_at.isoformat(),
+                    reason,
+                    work_order_id,
+                    current_organization_id,
+                ),
             )
         return current.model_copy(
             update={"deleted_at": deleted_at, "deletion_reason": reason}
