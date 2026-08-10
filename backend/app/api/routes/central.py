@@ -52,9 +52,6 @@ async def central_dashboard(
         for order in all_orders
         if order.archived_at is not None and order.deleted_at is None
     ]
-    is_default_organization = (
-        organization_id == get_settings().default_organization_id
-    )
     inventory = await simulated_inventory_gateway.list_items(
         "bench-technician", organization_id
     )

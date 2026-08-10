@@ -25,6 +25,7 @@ from app.api.routes.support import (
 )
 from app.core.provisioning_store import ProvisioningStore
 from app.api.routes.evidence import EquipmentRequest, link_equipment, list_equipment
+from app.api.routes.olt import _gateway, _gateways
 from app.domain.models import OperationResult
 from app.api.routes.financial import list_financial_accounts
 from app.api.routes.network import (
@@ -385,3 +386,24 @@ def test_equipment_scans_are_isolated_by_organization() -> None:
                 (first_id,),
             )
         set_current_organization(get_settings().default_organization_id)
+
+
+def test_olt_simulator_state_is_isolated_by_organization() -> None:
+    first_id = f"olt-first-{uuid4()}"
+    second_id = f"olt-second-{uuid4()}"
+    try:
+        first_gateway = _gateway(first_id)
+        second_gateway = _gateway(second_id)
+        asyncio.run(first_gateway.provision("ONU-TENANT-001", "500M"))
+
+        first_serials = {
+            item.serial for item in asyncio.run(first_gateway.discover())
+        }
+        second_serials = {
+            item.serial for item in asyncio.run(second_gateway.discover())
+        }
+        assert "ONU-TENANT-001" in first_serials
+        assert "ONU-TENANT-001" not in second_serials
+    finally:
+        _gateways.pop(first_id, None)
+        _gateways.pop(second_id, None)

@@ -8,11 +8,23 @@ from uuid import UUID, uuid4
 from app.api.routes.technician_auth import require_technician
 from app.core.config import get_settings
 from app.core.provisioning_store import ProvisioningStore
+from app.core.tenant_context import get_current_organization
 from app.integrations.olt.factory import build_olt_gateway
 
-router = APIRouter(prefix="/olt", tags=["olt-simulator"], dependencies=[Depends(require_technician)])
-gateway = build_olt_gateway(get_settings())
+router = APIRouter(
+    prefix="/olt",
+    tags=["olt-simulator"],
+    dependencies=[Depends(require_technician)],
+)
+_gateways = {}
 provisioning_store = ProvisioningStore(get_settings().database_url)
+
+
+def _gateway(organization_id: str | None = None):
+    current_organization_id = organization_id or get_current_organization()
+    if current_organization_id not in _gateways:
+        _gateways[current_organization_id] = build_olt_gateway(get_settings())
+    return _gateways[current_organization_id]
 
 
 class ProvisionRequest(BaseModel):
@@ -24,7 +36,7 @@ class ProvisionRequest(BaseModel):
 
 @router.get("/onus")
 async def discover() -> list[dict]:
-    return [asdict(item) for item in await gateway.discover()]
+    return [asdict(item) for item in await _gateway().discover()]
 
 
 @router.get("/provisioning")
@@ -47,7 +59,7 @@ async def provision(request: ProvisionRequest) -> dict:
     if previous is not None:
         return {**previous, "duplicate": True}
     result = {
-        **asdict(await gateway.provision(request.serial, request.profile)),
+        **asdict(await _gateway().provision(request.serial, request.profile)),
         "operation_id": operation_id,
         "work_order_id": request.work_order_id,
         "duplicate": False,
