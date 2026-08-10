@@ -37,6 +37,7 @@ from app.core.subscription_store import SAAS_PLANS, subscription_store
 from app.core.portal_customer_store import portal_customer_store
 from app.core.portal_invite_store import portal_invite_store
 from app.core.organization_store import organization_store
+from app.core.ai_support_store import ai_support_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -73,6 +74,8 @@ async def central_dashboard(
     financial_accounts = list_financial_accounts(organization_id)
     messages = list_simulated_messages(organization_id)[:5]
     support_requests = list_support_requests(organization_id=organization_id)
+    ai_knowledge = ai_support_store.list_knowledge(organization_id)
+    ai_drafts = ai_support_store.list_drafts(organization_id)
     network_alerts = list_active_alerts(organization_id)
     technicians = technician_store.list_all(organization_id)
     integration_config_store.ensure_unconfigured(organization_id)
@@ -216,6 +219,19 @@ async def central_dashboard(
         + "</td></tr>"
         for item in support_requests[:10]
     ) or "<tr><td colspan='7'>Nenhum chamado recebido.</td></tr>"
+    ai_knowledge_rows = "".join(
+        f"<tr><td>{escape(item['title'])}</td><td>{escape(item['content'])}</td>"
+        f"<td>{escape(item['created_at'])}</td></tr>"
+        for item in ai_knowledge
+    ) or "<tr><td colspan='3'>Nenhuma orientação cadastrada.</td></tr>"
+    confidence_labels = {"low": "Baixa", "medium": "Média", "high": "Alta"}
+    ai_draft_rows = "".join(
+        f"<tr><td>{escape(item['question'])}</td><td>{escape(item['answer'])}</td>"
+        f"<td>{escape(item['source_title'] or 'Escalar para atendente')}</td>"
+        f"<td>{escape(confidence_labels.get(item['confidence'], item['confidence']))}</td>"
+        "<td><span class='alert'>Revisão humana obrigatória</span></td></tr>"
+        for item in ai_drafts
+    ) or "<tr><td colspan='5'>Nenhum rascunho preparado.</td></tr>"
     network_rows = "".join(
         f"<tr><td>{escape(alert.title)}</td><td>{escape(alert.area)}</td>"
         f"<td>{escape(alert.detected_at.isoformat())}</td></tr>"
@@ -503,6 +519,7 @@ async def central_dashboard(
           <button class="menu-button" type="button" data-target="support">Chamados do portal do cliente</button>
           <button class="menu-button" type="button" data-target="mkauth-tickets">Chamados MK-AUTH</button>
           <button class="menu-button" type="button" data-target="whatsapp">WhatsApp simulado</button>
+          <button class="menu-button" type="button" data-target="ai-support">Assistente IA</button>
         </div></details>
         <details class="menu-category"><summary>Configurações</summary><div class="menu-items">
           <button class="menu-button" type="button" data-target="mkauth">Integração MK-AUTH</button>
@@ -677,6 +694,24 @@ async def central_dashboard(
       <section class="module-panel" data-module="support">
         <h2>Chamados do portal do cliente</h2>
         <table><thead><tr><th>Número</th><th>Assunto</th><th>Descrição</th><th>Situação</th><th>OS</th><th>Avaliação</th><th>Ação</th></tr></thead><tbody>{support_rows}</tbody></table>
+      </section>
+      <section class="module-panel" data-module="ai-support">
+        <h2>Assistente IA de atendimento</h2>
+        <p class="simulation"><b>MODO ASSISTIDO:</b> prepara rascunhos usando somente a base deste provedor. Nenhuma mensagem ou ação é executada automaticamente.</p>
+        <h3>Base de conhecimento</h3>
+        <form class="create-order" method="post" action="/central/ai/knowledge">
+          <label>Título<input name="title" minlength="3" maxlength="100" required placeholder="Ex.: Reiniciar roteador"></label>
+          <label>Orientação<input name="content" minlength="10" maxlength="1000" required placeholder="Resposta aprovada pela equipe"></label>
+          <button type="submit">ADICIONAR ORIENTAÇÃO</button>
+        </form>
+        <table><thead><tr><th>Título</th><th>Orientação aprovada</th><th>Cadastro UTC</th></tr></thead><tbody>{ai_knowledge_rows}</tbody></table>
+        <h3>Testar uma pergunta</h3>
+        <form class="create-order" method="post" action="/central/ai/drafts">
+          <label>Pergunta do cliente<input name="question" minlength="3" maxlength="500" required placeholder="Ex.: Minha internet está sem conexão"></label>
+          <button type="submit">PREPARAR RASCUNHO</button>
+        </form>
+        <h3>Rascunhos recentes</h3>
+        <table><thead><tr><th>Pergunta</th><th>Sugestão</th><th>Fonte</th><th>Confiança</th><th>Controle</th></tr></thead><tbody>{ai_draft_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="whatsapp">
         <h2>WhatsApp simulado</h2>
@@ -1654,6 +1689,37 @@ async def central_update_branding(
         support_phone,
     )
     return RedirectResponse("/central#branding", status_code=303)
+
+
+@router.post("/central/ai/knowledge", include_in_schema=False)
+async def central_create_ai_knowledge(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    title = fields.get("title", [""])[0].strip()
+    content = fields.get("content", [""])[0].strip()
+    if len(title) < 3 or len(title) > 100 or len(content) < 10 or len(content) > 1000:
+        raise HTTPException(422, "invalid_ai_knowledge")
+    ai_support_store.create_knowledge(
+        session["organization"]["id"], title, content
+    )
+    return RedirectResponse("/central#ai-support", status_code=303)
+
+
+@router.post("/central/ai/drafts", include_in_schema=False)
+async def central_create_ai_draft(
+    request: Request,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    question = fields.get("question", [""])[0].strip()
+    if len(question) < 3 or len(question) > 500:
+        raise HTTPException(422, "invalid_ai_question")
+    ai_support_store.create_draft(session["organization"]["id"], question)
+    return RedirectResponse("/central#ai-support", status_code=303)
 
 
 @router.post(

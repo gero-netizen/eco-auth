@@ -28,6 +28,7 @@ from app.core.provisioning_store import ProvisioningStore
 from app.api.routes.evidence import EquipmentRequest, link_equipment, list_equipment
 from app.api.routes.olt import _gateway, _gateways
 from app.core.portal_customer_store import PortalCustomerStore
+from app.core.ai_support_store import AiSupportStore
 from app.api.routes import client_portal as client_portal_routes
 from app.domain.models import OperationResult
 from app.api.routes.financial import list_financial_accounts
@@ -103,6 +104,29 @@ def test_organization_branding_is_isolated(tmp_path) -> None:
     assert updated["support_phone"] == "+55 71 99999-0000"
     assert untouched["name"] == "Provedor Dois"
     assert untouched["primary_color"] == "#075e54"
+
+
+def test_ai_knowledge_and_drafts_are_isolated_by_organization(tmp_path) -> None:
+    store = AiSupportStore(f"sqlite:///{tmp_path / 'ai-support.db'}")
+    store.create_knowledge(
+        "provedor-um",
+        "Sem conexão",
+        "Confira os cabos e reinicie o roteador por trinta segundos.",
+    )
+
+    first_draft = store.create_draft(
+        "provedor-um", "Estou sem conexão no roteador"
+    )
+    second_draft = store.create_draft(
+        "provedor-dois", "Estou sem conexão no roteador"
+    )
+
+    assert first_draft["source_title"] == "Sem conexão"
+    assert first_draft["confidence"] in {"medium", "high"}
+    assert first_draft["requires_human_review"] == 1
+    assert second_draft["source_title"] is None
+    assert second_draft["confidence"] == "low"
+    assert store.list_knowledge("provedor-dois") == []
 
 
 def test_inventory_is_isolated_by_organization(tmp_path) -> None:
