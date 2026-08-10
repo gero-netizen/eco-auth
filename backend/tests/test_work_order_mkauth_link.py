@@ -11,7 +11,10 @@ def test_created_work_order_keeps_mkauth_customer_uuid(tmp_path, monkeypatch) ->
     monkeypatch.setattr(
         gateway_module,
         "get_settings",
-        lambda: SimpleNamespace(database_url=f"sqlite:///{database_path}"),
+        lambda: SimpleNamespace(
+            database_url=f"sqlite:///{database_path}",
+            default_organization_id="g7-networks",
+        ),
     )
     gateway = gateway_module.SimulatedMkAuthGateway()
 

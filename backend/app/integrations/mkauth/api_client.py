@@ -10,7 +10,8 @@ import httpx
 
 
 class MkAuthApiClient:
-    """Read-only MK-AUTH API client. Mutating endpoints are intentionally absent."""
+    """MK-AUTH API client. Mutating endpoints exist (update_client, close_support_ticket,
+    etc.) but are only reachable through routes gated by mkauth_writes_enabled."""
 
     def __init__(
         self,

@@ -26,6 +26,8 @@ class TechnicianSession {
 
   static Future<void> clear() async {
     accessToken = null;
+    technicianId = null;
     await _storage.delete(key: _tokenKey);
+    await _storage.delete(key: _technicianIdKey);
   }
 }

@@ -43,7 +43,7 @@ def _valid_token(token: str) -> dict | None:
             return None
         return technician_store.get_active(technician_id, username, organization_id)
     except (TypeError, ValueError):
-        return False
+        return None
 
 
 async def require_technician(
