@@ -255,6 +255,17 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "MODO SIMULADO" in response.text
     assert response.text.count('class="menu-button') == 22
     assert response.text.count('data-module=') == 22
+    assert response.text.count('class="menu-category') == 7
+    for category in (
+        "Operação",
+        "Clientes",
+        "Financeiro",
+        "Rede",
+        "Atendimento",
+        "Configurações",
+        "Segurança",
+    ):
+        assert f"<summary>{category}</summary>" in response.text
     assert "Auditoria" in response.text
     assert "Usuários da central" in response.text
     assert "Identidade do provedor" in response.text

@@ -386,7 +386,9 @@ async def central_dashboard(
             for item in audit_store.list_recent(organization_id, 200)
         ) or "<tr><td colspan='5'>Nenhuma ação registrada ainda.</td></tr>"
     audit_menu = (
+        '<details class="menu-category"><summary>Segurança</summary><div class="menu-items">'
         '<button class="menu-button" type="button" data-target="audit">Auditoria</button>'
+        '</div></details>'
         if can_manage_users
         else ""
     )
@@ -418,6 +420,14 @@ async def central_dashboard(
     .dashboard-layout {{ display:grid; grid-template-columns:270px minmax(0,1fr); gap:18px; align-items:start; }}
     .sidebar {{ position:sticky; top:18px; background:white; border-radius:14px; box-shadow:0 2px 10px #17332f18; padding:12px; }}
     .sidebar-title {{ margin:4px 8px 10px; color:#627773; font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }}
+    .menu-category {{ border-bottom:1px solid #e3ecea; padding:3px 0; }}
+    .menu-category:last-child {{ border-bottom:0; }}
+    .menu-category summary {{ list-style:none; cursor:pointer; padding:10px 9px; border-radius:9px; color:#456b65; font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }}
+    .menu-category summary::-webkit-details-marker {{ display:none; }}
+    .menu-category summary::after {{ content:'▸'; float:right; transition:transform .15s ease; }}
+    .menu-category[open] summary::after {{ transform:rotate(90deg); }}
+    .menu-category summary:hover {{ background:#f2f8f6; }}
+    .menu-items {{ padding:0 3px 5px; }}
     .menu-button {{ display:block; width:100%; padding:11px 12px; margin:2px 0; border-radius:9px; background:transparent; color:var(--ink); text-align:left; font-weight:600; }}
     .menu-button:hover {{ background:#edf7f5; }}
     .menu-button.active {{ background:var(--green); color:white; }}
@@ -443,9 +453,9 @@ async def central_dashboard(
     input.quantity {{ width:85px; padding:8px; }}
     @media(max-width:850px) {{
       .dashboard-layout {{ grid-template-columns:1fr; }}
-      .sidebar {{ position:static; display:flex; overflow-x:auto; gap:6px; padding:10px; }}
+      .sidebar {{ position:static; display:block; padding:10px; }}
       .sidebar-title {{ display:none; }}
-      .menu-button {{ flex:0 0 auto; width:auto; white-space:nowrap; }}
+      .menu-button {{ width:100%; white-space:normal; }}
     }}
     @media(max-width:700px) {{ .create-order {{ grid-template-columns:1fr; }} }}
     .alert {{ color:#8a4b00; }} footer {{ margin-top:20px; color:#627773; }}
@@ -467,28 +477,40 @@ async def central_dashboard(
     <div class="dashboard-layout">
       <nav class="sidebar" aria-label="Módulos da central">
         <div class="sidebar-title">Menu da central</div>
-        <button class="menu-button active" type="button" data-target="work-orders">Abrir OS simulada</button>
-        <button class="menu-button" type="button" data-target="archived-orders">OS arquivadas</button>
-        <button class="menu-button" type="button" data-target="inventory">Estoque do técnico</button>
-        <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
-        <button class="menu-button" type="button" data-target="technicians">Técnicos</button>
-        <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
-        <button class="menu-button" type="button" data-target="portal-customers">Clientes do portal</button>
-        <button class="menu-button" type="button" data-target="branding">Identidade do provedor</button>
-        <button class="menu-button" type="button" data-target="subscription">Plano e assinatura</button>
+        <details class="menu-category" open><summary>Operação</summary><div class="menu-items">
+          <button class="menu-button active" type="button" data-target="work-orders">Abrir OS simulada</button>
+          <button class="menu-button" type="button" data-target="archived-orders">OS arquivadas</button>
+          <button class="menu-button" type="button" data-target="inventory">Estoque do técnico</button>
+          <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
+          <button class="menu-button" type="button" data-target="technicians">Técnicos</button>
+        </div></details>
+        <details class="menu-category"><summary>Clientes</summary><div class="menu-items">
+          <button class="menu-button" type="button" data-target="portal-customers">Clientes do portal</button>
+          <button class="menu-button" type="button" data-target="mkauth-clients">Clientes MK-AUTH</button>
+          <button class="menu-button" type="button" data-target="mkauth-inactive-clients">Clientes desativados</button>
+          <button class="menu-button" type="button" data-target="mkauth-additional-clients">Clientes adicionais</button>
+        </div></details>
+        <details class="menu-category"><summary>Financeiro</summary><div class="menu-items">
+          <button class="menu-button" type="button" data-target="financial">Financeiro e desbloqueio</button>
+          <button class="menu-button" type="button" data-target="mkauth-titles">Títulos MK-AUTH</button>
+        </div></details>
+        <details class="menu-category"><summary>Rede</summary><div class="menu-items">
+          <button class="menu-button" type="button" data-target="network">Monitoramento da rede</button>
+          <button class="menu-button" type="button" data-target="routeros-diagnostic">Diagnóstico PPPoE/RADIUS</button>
+          <button class="menu-button" type="button" data-target="provisioning">Últimos provisionamentos</button>
+        </div></details>
+        <details class="menu-category"><summary>Atendimento</summary><div class="menu-items">
+          <button class="menu-button" type="button" data-target="support">Chamados do portal do cliente</button>
+          <button class="menu-button" type="button" data-target="mkauth-tickets">Chamados MK-AUTH</button>
+          <button class="menu-button" type="button" data-target="whatsapp">WhatsApp simulado</button>
+        </div></details>
+        <details class="menu-category"><summary>Configurações</summary><div class="menu-items">
+          <button class="menu-button" type="button" data-target="mkauth">Integração MK-AUTH</button>
+          <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
+          <button class="menu-button" type="button" data-target="branding">Identidade do provedor</button>
+          <button class="menu-button" type="button" data-target="subscription">Plano e assinatura</button>
+        </div></details>
         {audit_menu}
-        <button class="menu-button" type="button" data-target="network">Monitoramento da rede</button>
-        <button class="menu-button" type="button" data-target="routeros-diagnostic">Diagnóstico PPPoE/RADIUS</button>
-        <button class="menu-button" type="button" data-target="provisioning">Últimos provisionamentos</button>
-        <button class="menu-button" type="button" data-target="financial">Financeiro e desbloqueio</button>
-        <button class="menu-button" type="button" data-target="support">Chamados do portal do cliente</button>
-        <button class="menu-button" type="button" data-target="whatsapp">WhatsApp simulado</button>
-        <button class="menu-button" type="button" data-target="mkauth">Integração MK-AUTH</button>
-        <button class="menu-button" type="button" data-target="mkauth-clients">Clientes MK-AUTH</button>
-        <button class="menu-button" type="button" data-target="mkauth-inactive-clients">Clientes desativados</button>
-        <button class="menu-button" type="button" data-target="mkauth-additional-clients">Clientes adicionais</button>
-        <button class="menu-button" type="button" data-target="mkauth-titles">Títulos MK-AUTH</button>
-        <button class="menu-button" type="button" data-target="mkauth-tickets">Chamados MK-AUTH</button>
       </nav>
       <div class="module-area">
       <section class="module-panel active" data-module="work-orders">
@@ -1394,6 +1416,9 @@ async def central_dashboard(
           const active = button.dataset.target === selected;
           button.classList.toggle('active', active);
           button.setAttribute('aria-current', active ? 'page' : 'false');
+        }});
+        document.querySelectorAll('.menu-category').forEach((category) => {{
+          category.open = Boolean(category.querySelector(`.menu-button[data-target="${{selected}}"]`));
         }});
         modulePanels.forEach((panel) => {{
           panel.classList.toggle('active', panel.dataset.module === selected);
