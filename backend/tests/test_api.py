@@ -28,6 +28,24 @@ def test_health() -> None:
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_central_session_is_scoped_to_default_organization() -> None:
+    response = client.get("/api/v1/saas/organization/current")
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "g7-networks",
+        "name": "G7 Networks",
+        "slug": "g7-networks",
+        "active": True,
+    }
+
+    anonymous = TestClient(app)
+    response = anonymous.get(
+        "/api/v1/saas/organization/current", follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/central/login"
+
+
 def test_technician_api_requires_a_valid_login() -> None:
     anonymous = TestClient(app)
     assert anonymous.get("/api/v1/work-orders").status_code == 401

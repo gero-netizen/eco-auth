@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.core.config import get_settings
+from app.core.organization_store import organization_store
 
 router = APIRouter(tags=["central-authentication"])
 _cookie_name = "isp_central_session"
@@ -17,33 +18,41 @@ def _signature(value: str) -> str:
     return hmac.new(secret, value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _new_session(username: str) -> str:
-    payload = f"{username}:{int(time.time()) + 8 * 60 * 60}"
+def _new_session(username: str, organization_id: str) -> str:
+    payload = f"{organization_id}:{username}:{int(time.time()) + 8 * 60 * 60}"
     return f"{payload}:{_signature(payload)}"
 
 
-def _valid_session(value: str | None) -> bool:
+def _valid_session(value: str | None) -> dict | None:
     if not value:
-        return False
+        return None
     try:
-        username, expires, signature = value.rsplit(":", 2)
-        payload = f"{username}:{expires}"
-        return (
+        organization_id, username, expires, signature = value.rsplit(":", 3)
+        payload = f"{organization_id}:{username}:{expires}"
+        valid = (
             username == get_settings().central_username
             and int(expires) >= int(time.time())
             and hmac.compare_digest(signature, _signature(payload))
         )
+        if not valid:
+            return None
+        organization = organization_store.get_active(organization_id)
+        if organization is None:
+            return None
+        return {"username": username, "organization": organization}
     except (TypeError, ValueError):
-        return False
+        return None
 
 
-def require_central_session(request: Request) -> None:
-    if not _valid_session(request.cookies.get(_cookie_name)):
+def require_central_session(request: Request) -> dict:
+    session = _valid_session(request.cookies.get(_cookie_name))
+    if session is None:
         raise HTTPException(
             status_code=303,
             detail="central_login_required",
             headers={"Location": "/central/login"},
         )
+    return session
 
 
 @router.get("/central/login", response_class=HTMLResponse)
@@ -75,9 +84,10 @@ async def central_login(request: Request) -> RedirectResponse:
     if not valid:
         return RedirectResponse("/central/login?error=true", status_code=303)
     response = RedirectResponse("/central", status_code=303)
+    organization = organization_store.get_default()
     response.set_cookie(
         _cookie_name,
-        _new_session(username),
+        _new_session(username, organization["id"]),
         max_age=8 * 60 * 60,
         httponly=True,
         samesite="strict",

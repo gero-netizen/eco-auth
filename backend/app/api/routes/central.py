@@ -26,7 +26,9 @@ router = APIRouter(
 
 
 @router.get("/central", response_class=HTMLResponse)
-async def central_dashboard() -> str:
+async def central_dashboard(
+    session: dict = Depends(require_central_session),
+) -> str:
     all_orders = await simulated_mkauth_gateway.list_work_orders(None)
     orders = [
         order
@@ -45,7 +47,8 @@ async def central_dashboard() -> str:
     messages = list(reversed(simulated_messages[-5:]))
     support_requests = list_support_requests()
     network_alerts = list_active_alerts()
-    technicians = technician_store.list_all()
+    organization_id = session["organization"]["id"]
+    technicians = technician_store.list_all(organization_id)
     mkauth_settings = get_settings()
     active_technicians = [item for item in technicians if item["active"]]
     technician_names = {item["id"]: item["name"] for item in technicians}
@@ -1241,7 +1244,10 @@ async def central_close_mkauth_ticket(
 
 
 @router.post("/central/technicians", include_in_schema=False)
-async def central_create_technician(request: Request) -> RedirectResponse:
+async def central_create_technician(
+    request: Request,
+    session: dict = Depends(require_central_session),
+) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     name = fields.get("name", [""])[0].strip()
     username = fields.get("username", [""])[0].strip().lower()
@@ -1249,7 +1255,9 @@ async def central_create_technician(request: Request) -> RedirectResponse:
     if len(name) < 3 or len(username) < 3 or len(password) < 8:
         raise HTTPException(422, "invalid_technician_data")
     try:
-        technician_store.create(name, username, password)
+        technician_store.create(
+            name, username, password, session["organization"]["id"]
+        )
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     return RedirectResponse("/central", status_code=303)
@@ -1328,11 +1336,17 @@ async def central_restore_work_order(work_order_id: str) -> RedirectResponse:
 
 @router.post("/central/work-orders/{work_order_id}/assign", include_in_schema=False)
 async def central_assign_work_order(
-    work_order_id: str, request: Request
+    work_order_id: str,
+    request: Request,
+    session: dict = Depends(require_central_session),
 ) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     technician_id = fields.get("technician_id", [""])[0]
-    active_ids = {item["id"] for item in technician_store.list_all() if item["active"]}
+    active_ids = {
+        item["id"]
+        for item in technician_store.list_all(session["organization"]["id"])
+        if item["active"]
+    }
     if technician_id not in active_ids:
         raise HTTPException(422, "invalid_or_inactive_technician")
     try:
@@ -1399,12 +1413,16 @@ async def central_update_work_order_planning(
 
 @router.post("/central/technicians/{technician_id}/toggle", include_in_schema=False)
 async def central_toggle_technician(
-    technician_id: str, request: Request
+    technician_id: str,
+    request: Request,
+    session: dict = Depends(require_central_session),
 ) -> RedirectResponse:
     fields = parse_qs((await request.body()).decode("utf-8"))
     active = fields.get("active", ["0"])[0] == "1"
     try:
-        technician_store.set_active(technician_id, active)
+        technician_store.set_active(
+            technician_id, active, session["organization"]["id"]
+        )
     except KeyError as error:
         raise HTTPException(404, str(error)) from error
     return RedirectResponse("/central", status_code=303)

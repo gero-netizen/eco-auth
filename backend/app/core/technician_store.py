@@ -25,14 +25,22 @@ class TechnicianStore:
                 """
                 CREATE TABLE IF NOT EXISTS technicians (
                     id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
                     name TEXT NOT NULL,
-                    username TEXT NOT NULL UNIQUE,
+                    username TEXT NOT NULL,
                     password_hash TEXT NOT NULL,
                     active INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (organization_id, username)
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(technicians)")
+            }
+            if "organization_id" not in columns:
+                self._migrate_to_organizations(connection)
         settings = get_settings()
         if settings.technician_username and settings.technician_password:
             self.create_if_missing(
@@ -40,7 +48,38 @@ class TechnicianStore:
                 "Técnico de Bancada",
                 settings.technician_username,
                 settings.technician_password,
+                settings.default_organization_id,
             )
+
+    @staticmethod
+    def _migrate_to_organizations(connection: sqlite3.Connection) -> None:
+        default_organization_id = get_settings().default_organization_id
+        connection.execute(
+            """
+            CREATE TABLE technicians_saas (
+                id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                username TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, username)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO technicians_saas (
+                id, organization_id, name, username, password_hash, active, created_at
+            )
+            SELECT id, ?, name, username, password_hash, active, created_at
+            FROM technicians
+            """,
+            (default_organization_id,),
+        )
+        connection.execute("DROP TABLE technicians")
+        connection.execute("ALTER TABLE technicians_saas RENAME TO technicians")
 
     @staticmethod
     def _hash_password(password: str, salt: bytes | None = None) -> str:
@@ -59,65 +98,140 @@ class TechnicianStore:
         except (ValueError, TypeError):
             return False
 
-    def create_if_missing(self, technician_id: str, name: str, username: str, password: str) -> None:
+    def create_if_missing(
+        self,
+        technician_id: str,
+        name: str,
+        username: str,
+        password: str,
+        organization_id: str | None = None,
+    ) -> None:
+        current_organization_id = organization_id or get_settings().default_organization_id
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO technicians (id, name, username, password_hash)
-                VALUES (?, ?, ?, ?)
+                INSERT OR IGNORE INTO technicians (
+                    id, organization_id, name, username, password_hash
+                )
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (technician_id, name, username, self._hash_password(password)),
+                (
+                    technician_id,
+                    current_organization_id,
+                    name,
+                    username,
+                    self._hash_password(password),
+                ),
             )
 
-    def authenticate(self, username: str, password: str) -> dict | None:
+    def authenticate(
+        self, username: str, password: str, organization_id: str | None = None
+    ) -> dict | None:
+        current_organization_id = organization_id or get_settings().default_organization_id
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT id, name, username, password_hash, active FROM technicians WHERE username = ?",
-                (username,),
+                """
+                SELECT id, organization_id, name, username, password_hash, active
+                FROM technicians
+                WHERE organization_id = ? AND username = ?
+                """,
+                (current_organization_id, username),
             ).fetchone()
         if row is None or not row["active"] or not self._verify_password(password, row["password_hash"]):
             return None
-        return {"id": row["id"], "name": row["name"], "username": row["username"]}
+        return {
+            "id": row["id"],
+            "organization_id": row["organization_id"],
+            "name": row["name"],
+            "username": row["username"],
+        }
 
-    def get_active(self, technician_id: str, username: str) -> dict | None:
+    def get_active(
+        self, technician_id: str, username: str, organization_id: str | None = None
+    ) -> dict | None:
+        current_organization_id = organization_id or get_settings().default_organization_id
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT id, name, username FROM technicians WHERE id = ? AND username = ? AND active = 1",
-                (technician_id, username),
+                """
+                SELECT id, organization_id, name, username
+                FROM technicians
+                WHERE id = ? AND username = ? AND organization_id = ? AND active = 1
+                """,
+                (technician_id, username, current_organization_id),
             ).fetchone()
         return dict(row) if row else None
 
-    def list_all(self) -> list[dict]:
+    def list_all(self, organization_id: str | None = None) -> list[dict]:
+        current_organization_id = organization_id or get_settings().default_organization_id
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, name, username, active, created_at FROM technicians ORDER BY name"
+                """
+                SELECT id, organization_id, name, username, active, created_at
+                FROM technicians
+                WHERE organization_id = ?
+                ORDER BY name
+                """,
+                (current_organization_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def create(self, name: str, username: str, password: str) -> dict:
+    def create(
+        self,
+        name: str,
+        username: str,
+        password: str,
+        organization_id: str | None = None,
+    ) -> dict:
+        current_organization_id = organization_id or get_settings().default_organization_id
         technician_id = f"technician-{uuid4()}"
         try:
             with self._connect() as connection:
                 connection.execute(
-                    "INSERT INTO technicians (id, name, username, password_hash) VALUES (?, ?, ?, ?)",
-                    (technician_id, name, username, self._hash_password(password)),
+                    """
+                    INSERT INTO technicians (
+                        id, organization_id, name, username, password_hash
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        technician_id,
+                        current_organization_id,
+                        name,
+                        username,
+                        self._hash_password(password),
+                    ),
                 )
         except sqlite3.IntegrityError as error:
             raise ValueError("technician_username_already_exists") from error
-        return {"id": technician_id, "name": name, "username": username, "active": 1}
+        return {
+            "id": technician_id,
+            "organization_id": current_organization_id,
+            "name": name,
+            "username": username,
+            "active": 1,
+        }
 
-    def set_active(self, technician_id: str, active: bool) -> None:
+    def set_active(
+        self, technician_id: str, active: bool, organization_id: str | None = None
+    ) -> None:
+        current_organization_id = organization_id or get_settings().default_organization_id
         with self._connect() as connection:
             updated = connection.execute(
-                "UPDATE technicians SET active = ? WHERE id = ?",
-                (int(active), technician_id),
+                """
+                UPDATE technicians SET active = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (int(active), technician_id, current_organization_id),
             )
         if updated.rowcount == 0:
             raise KeyError("technician_not_found")
 
-    def delete(self, technician_id: str) -> None:
+    def delete(self, technician_id: str, organization_id: str | None = None) -> None:
+        current_organization_id = organization_id or get_settings().default_organization_id
         with self._connect() as connection:
-            connection.execute("DELETE FROM technicians WHERE id = ?", (technician_id,))
+            connection.execute(
+                "DELETE FROM technicians WHERE id = ? AND organization_id = ?",
+                (technician_id, current_organization_id),
+            )
 
 
 technician_store = TechnicianStore(get_settings().database_url)

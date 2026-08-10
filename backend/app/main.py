@@ -17,6 +17,7 @@ from app.api.routes import (
     network,
     notifications,
     olt,
+    saas,
     sync,
     support,
     technician_auth,
@@ -63,6 +64,7 @@ app.include_router(access.router, prefix="/api/v1")
 app.include_router(feasibility.router, prefix="/api/v1")
 app.include_router(financial.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(saas.router, prefix="/api/v1")
 app.include_router(central_auth.router)
 app.include_router(central.router)
 app.include_router(client_portal.router)
