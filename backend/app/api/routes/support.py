@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from app.api.routes.work_orders import create_simulated_work_order
 from app.api.routes.central_auth import require_central_roles
+from app.core.ai_support_store import ai_support_store
 from app.core.config import get_settings
 from app.core.organization_store import organization_store
 from app.core.portal_session import require_portal_customer
@@ -83,6 +84,16 @@ def _initialize() -> None:
             )
         if "rated_at" not in columns:
             connection.execute("ALTER TABLE support_requests ADD COLUMN rated_at TEXT")
+        if "response" not in columns:
+            connection.execute("ALTER TABLE support_requests ADD COLUMN response TEXT")
+        if "responded_at" not in columns:
+            connection.execute(
+                "ALTER TABLE support_requests ADD COLUMN responded_at TEXT"
+            )
+        if "forwarded_to" not in columns:
+            connection.execute(
+                "ALTER TABLE support_requests ADD COLUMN forwarded_to TEXT"
+            )
 
 
 _initialize()
@@ -120,7 +131,52 @@ def create_support_request(
             """,
             (current_organization_id, customer_id, subject, description),
         ).lastrowid
+    # Um rascunho é preparado assim que o chamado chega. Nada sai para o
+    # cliente até um atendente aprovar (ver ai_support_store.review_draft).
+    ai_support_store.create_draft(
+        current_organization_id,
+        f"{subject}\n\n{description}",
+        support_request_id=str(request_id),
+    )
     return int(request_id)
+
+
+def mark_answered(
+    request_id: int,
+    response: str,
+    organization_id: str | None = None,
+) -> None:
+    current_organization_id = organization_id or get_current_organization()
+    with _connect() as connection:
+        updated = connection.execute(
+            """
+            UPDATE support_requests
+            SET status = 'answered', response = ?, responded_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND organization_id = ?
+            """,
+            (response, request_id, current_organization_id),
+        )
+        if updated.rowcount != 1:
+            raise HTTPException(404, "support_request_not_found")
+
+
+def mark_forwarded(
+    request_id: int,
+    forwarded_to: str,
+    organization_id: str | None = None,
+) -> None:
+    current_organization_id = organization_id or get_current_organization()
+    with _connect() as connection:
+        updated = connection.execute(
+            """
+            UPDATE support_requests
+            SET forwarded_to = ?
+            WHERE id = ? AND organization_id = ?
+            """,
+            (forwarded_to, request_id, current_organization_id),
+        )
+        if updated.rowcount != 1:
+            raise HTTPException(404, "support_request_not_found")
 
 
 def save_rating(

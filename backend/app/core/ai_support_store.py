@@ -5,6 +5,28 @@ from uuid import uuid4
 
 from app.core.config import get_settings
 
+CATEGORIES = (
+    "financeiro",
+    "sem_conexao",
+    "lentidao",
+    "configuracao_wifi",
+    "mudanca_endereco",
+    "segunda_via",
+    "manutencao_geral",
+    "outro",
+)
+CATEGORY_LABELS = {
+    "financeiro": "Financeiro",
+    "sem_conexao": "Sem conexão",
+    "lentidao": "Lentidão",
+    "configuracao_wifi": "Configuração Wi-Fi",
+    "mudanca_endereco": "Mudança de endereço",
+    "segunda_via": "Segunda via",
+    "manutencao_geral": "Manutenção geral",
+    "outro": "Outro",
+}
+DRAFT_STATUSES = ("pending", "approved", "rejected", "forwarded")
+
 
 class AiSupportStore:
     """Base isolada para rascunhos assistidos, sem envio ou ação automática."""
@@ -40,6 +62,35 @@ class AiSupportStore:
                     PRIMARY KEY (organization_id, id)
                 )"""
             )
+            self._migrate(connection)
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        knowledge_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(ai_knowledge)")
+        }
+        if "category" not in knowledge_columns:
+            connection.execute(
+                "ALTER TABLE ai_knowledge ADD COLUMN category TEXT NOT NULL DEFAULT 'outro'"
+            )
+        draft_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(ai_support_drafts)")
+        }
+        draft_migrations = {
+            "support_request_id": "TEXT",
+            "category": "TEXT NOT NULL DEFAULT 'outro'",
+            "status": "TEXT NOT NULL DEFAULT 'pending'",
+            "edited_answer": "TEXT",
+            "reviewed_by": "TEXT",
+            "reviewed_by_name": "TEXT",
+            "reviewed_at": "TEXT",
+            "forwarded_to": "TEXT",
+        }
+        for column, definition in draft_migrations.items():
+            if column not in draft_columns:
+                connection.execute(
+                    f"ALTER TABLE ai_support_drafts ADD COLUMN {column} {definition}"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path, timeout=10)
@@ -47,14 +98,16 @@ class AiSupportStore:
         return connection
 
     def create_knowledge(
-        self, organization_id: str, title: str, content: str
+        self, organization_id: str, title: str, content: str, category: str = "outro"
     ) -> dict:
+        if category not in CATEGORIES:
+            category = "outro"
         item_id = f"knowledge-{uuid4()}"
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO ai_knowledge
-                (id, organization_id, title, content) VALUES (?, ?, ?, ?)""",
-                (item_id, organization_id, title, content),
+                (id, organization_id, title, content, category) VALUES (?, ?, ?, ?, ?)""",
+                (item_id, organization_id, title, content, category),
             )
         return self.get_knowledge(organization_id, item_id)
 
@@ -86,7 +139,12 @@ class AiSupportStore:
             if len(token) >= 3
         }
 
-    def create_draft(self, organization_id: str, question: str) -> dict:
+    def create_draft(
+        self,
+        organization_id: str,
+        question: str,
+        support_request_id: str | None = None,
+    ) -> dict:
         question_tokens = self._tokens(question)
         ranked = []
         for item in self.list_knowledge(organization_id):
@@ -100,18 +158,20 @@ class AiSupportStore:
                 "Encaminhe o atendimento para uma pessoa da equipe."
             )
             source_title = None
+            category = "outro"
             confidence = "low"
         else:
             answer = source["content"]
             source_title = source["title"]
+            category = source["category"]
             confidence = "high" if score >= 2 else "medium"
         draft_id = f"ai-draft-{uuid4()}"
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO ai_support_drafts (
                     id, organization_id, question, answer, source_title,
-                    confidence, requires_human_review
-                ) VALUES (?, ?, ?, ?, ?, ?, 1)""",
+                    confidence, requires_human_review, support_request_id, category
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                 (
                     draft_id,
                     organization_id,
@@ -119,9 +179,34 @@ class AiSupportStore:
                     answer,
                     source_title,
                     confidence,
+                    support_request_id,
+                    category,
                 ),
             )
-        return self.list_drafts(organization_id, 1)[0]
+        return self.get_draft(organization_id, draft_id)
+
+    def get_draft(self, organization_id: str, draft_id: str) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM ai_support_drafts
+                WHERE organization_id = ? AND id = ?""",
+                (organization_id, draft_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError("ai_draft_not_found")
+        return dict(row)
+
+    def get_draft_for_request(
+        self, organization_id: str, support_request_id: str
+    ) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM ai_support_drafts
+                WHERE organization_id = ? AND support_request_id = ?
+                ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (organization_id, str(support_request_id)),
+            ).fetchone()
+        return dict(row) if row else None
 
     def list_drafts(self, organization_id: str, limit: int = 10) -> list[dict]:
         with self._connect() as connection:
@@ -131,6 +216,54 @@ class AiSupportStore:
                 (organization_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def review_draft(
+        self,
+        organization_id: str,
+        draft_id: str,
+        status: str,
+        reviewer: dict,
+        edited_answer: str | None = None,
+        forwarded_to: str | None = None,
+    ) -> dict:
+        """Applies a human decision to a draft. Never sends anything on its own —
+        the caller decides what, if anything, reaches the customer.
+
+        Guardrail: a 'low' confidence draft cannot be approved verbatim. The
+        reviewer must supply an edited_answer (i.e. actually write the reply)
+        or choose to reject/forward instead. This is what keeps a low-confidence
+        guess from ever becoming an automatic-looking response.
+        """
+        if status not in DRAFT_STATUSES or status == "pending":
+            raise ValueError("invalid_review_status")
+        draft = self.get_draft(organization_id, draft_id)
+        if draft["status"] != "pending":
+            raise ValueError("draft_already_reviewed")
+        if status == "approved":
+            if draft["confidence"] == "low" and not (edited_answer or "").strip():
+                raise ValueError("low_confidence_requires_edit")
+            if edited_answer is not None and not edited_answer.strip():
+                raise ValueError("empty_edited_answer")
+        if status == "forwarded" and not (forwarded_to or "").strip():
+            raise ValueError("forward_requires_target")
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE ai_support_drafts SET
+                    status = ?, edited_answer = ?, reviewed_by = ?,
+                    reviewed_by_name = ?, forwarded_to = ?,
+                    reviewed_at = CURRENT_TIMESTAMP
+                WHERE organization_id = ? AND id = ?""",
+                (
+                    status,
+                    edited_answer.strip() if edited_answer else None,
+                    reviewer["id"],
+                    reviewer["name"],
+                    forwarded_to.strip() if forwarded_to else None,
+                    organization_id,
+                    draft_id,
+                ),
+            )
+        return self.get_draft(organization_id, draft_id)
 
 
 ai_support_store = AiSupportStore(get_settings().database_url)

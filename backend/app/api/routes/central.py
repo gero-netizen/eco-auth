@@ -18,7 +18,7 @@ from app.api.routes.notifications import (
     list_simulated_messages,
     record_simulated_portal_invite_message,
 )
-from app.api.routes.support import list_support_requests
+from app.api.routes.support import list_support_requests, mark_answered, mark_forwarded
 from app.api.routes.network import list_active_alerts
 from app.api.routes.central_auth import (
     require_central_access,
@@ -37,7 +37,7 @@ from app.core.subscription_store import SAAS_PLANS, subscription_store
 from app.core.portal_customer_store import portal_customer_store
 from app.core.portal_invite_store import portal_invite_store
 from app.core.organization_store import organization_store
-from app.core.ai_support_store import ai_support_store
+from app.core.ai_support_store import CATEGORIES, CATEGORY_LABELS, ai_support_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -207,6 +207,61 @@ async def central_dashboard(
         f"<td>{escape(message['created_at'])}</td></tr>"
         for message in messages
     ) or "<tr><td colspan='6'>Nenhuma mensagem simulada</td></tr>"
+    ai_category_options = "".join(
+        f"<option value='{value}'>{escape(label)}</option>"
+        for value, label in CATEGORY_LABELS.items()
+    )
+    forward_sector_options = ai_category_options
+    confidence_labels = {"low": "Baixa", "medium": "Média", "high": "Alta"}
+
+    def support_ai_panel(item: dict) -> str:
+        draft = ai_support_store.get_draft_for_request(organization_id, str(item["id"]))
+        if draft is None:
+            return ""
+        category_label = CATEGORY_LABELS.get(draft["category"], draft["category"])
+        confidence_label = confidence_labels.get(draft["confidence"], draft["confidence"])
+        if draft["status"] == "approved":
+            final_answer = draft["edited_answer"] or draft["answer"]
+            return (
+                "<tr class='ai-panel-row'><td colspan='7'><div class='ai-panel ai-panel-done'>"
+                f"<b>Resposta aprovada e enviada ao cliente</b> "
+                f"({escape(draft['reviewed_by_name'] or '')} em {escape(draft['reviewed_at'] or '')})"
+                f"<p>{escape(final_answer)}</p></div></td></tr>"
+            )
+        if draft["status"] == "rejected":
+            return (
+                "<tr class='ai-panel-row'><td colspan='7'><div class='ai-panel ai-panel-done'>"
+                f"<b>Rascunho rejeitado</b> por {escape(draft['reviewed_by_name'] or '')} "
+                "— aguardando atendimento manual.</div></td></tr>"
+            )
+        if draft["status"] == "forwarded":
+            return (
+                "<tr class='ai-panel-row'><td colspan='7'><div class='ai-panel ai-panel-done'>"
+                f"<b>Encaminhado para:</b> {escape(CATEGORY_LABELS.get(draft['forwarded_to'], draft['forwarded_to'] or ''))} "
+                f"por {escape(draft['reviewed_by_name'] or '')}</div></td></tr>"
+            )
+        low_confidence_warning = (
+            "<p class='alert'>Confiança baixa: escreva a resposta antes de aprovar "
+            "(não é possível aprovar o texto padrão sem revisão).</p>"
+            if draft["confidence"] == "low" else ""
+        )
+        return (
+            "<tr class='ai-panel-row'><td colspan='7'><div class='ai-panel'>"
+            f"<p><b>Sugestão do assistente</b> — categoria: {escape(category_label)} • "
+            f"confiança: {escape(confidence_label)} • fonte: "
+            f"{escape(draft['source_title'] or 'nenhuma, escalar para atendente')}</p>"
+            f"<form method='post' action='/central/chamados/{item['id']}/ia/aprovar' class='ai-review-form'>"
+            f"<textarea name='edited_answer' maxlength='1000' placeholder='Edite a resposta se necessário'>{escape(draft['answer'])}</textarea>"
+            f"{low_confidence_warning}"
+            "<button type='submit'>APROVAR E RESPONDER</button></form>"
+            f"<form method='post' action='/central/chamados/{item['id']}/ia/rejeitar' class='ai-review-form'>"
+            "<button type='submit' class='secondary'>REJEITAR</button></form>"
+            f"<form method='post' action='/central/chamados/{item['id']}/ia/encaminhar' class='ai-review-form'>"
+            f"<select name='forwarded_to' required><option value=''>Encaminhar para o setor…</option>{forward_sector_options}</select>"
+            "<button type='submit' class='secondary'>ENCAMINHAR</button></form>"
+            "</div></td></tr>"
+        )
+
     support_rows = "".join(
         f"<tr><td>#{item['id']}</td><td>{escape(item['subject'])}</td>"
         f"<td>{escape(item['description'])}</td><td>{escape(item['status'])}</td>"
@@ -217,14 +272,15 @@ async def central_dashboard(
             if item["work_order_id"] is None else "Convertido"
         )
         + "</td></tr>"
+        + support_ai_panel(item)
         for item in support_requests[:10]
     ) or "<tr><td colspan='7'>Nenhum chamado recebido.</td></tr>"
     ai_knowledge_rows = "".join(
         f"<tr><td>{escape(item['title'])}</td><td>{escape(item['content'])}</td>"
+        f"<td>{escape(CATEGORY_LABELS.get(item['category'], item['category']))}</td>"
         f"<td>{escape(item['created_at'])}</td></tr>"
         for item in ai_knowledge
-    ) or "<tr><td colspan='3'>Nenhuma orientação cadastrada.</td></tr>"
-    confidence_labels = {"low": "Baixa", "medium": "Média", "high": "Alta"}
+    ) or "<tr><td colspan='4'>Nenhuma orientação cadastrada.</td></tr>"
     ai_draft_rows = "".join(
         f"<tr><td>{escape(item['question'])}</td><td>{escape(item['answer'])}</td>"
         f"<td>{escape(item['source_title'] or 'Escalar para atendente')}</td>"
@@ -462,6 +518,15 @@ async def central_dashboard(
     .button-link {{ display:inline-block; border-radius:8px; padding:8px 10px; background:var(--green); color:white; text-decoration:none; white-space:nowrap; }}
     .secondary-link {{ background:#456b65; }}
     .danger-link {{ background:#b42318; }}
+    tr.ai-panel-row td {{ padding:0; border-bottom:1px solid #dce8e5; }}
+    .ai-panel {{ background:#f5fbfa; border-left:4px solid var(--green); padding:14px 16px; margin:6px 0; border-radius:0 8px 8px 0; }}
+    .ai-panel.ai-panel-done {{ border-left-color:#456b65; background:#f3f8f7; }}
+    .ai-panel p {{ margin:6px 0; }}
+    .ai-review-form {{ display:inline-flex; gap:8px; align-items:flex-start; margin:6px 8px 0 0; vertical-align:top; }}
+    .ai-panel textarea {{ width:320px; min-height:70px; padding:8px; border:1px solid #aac0bb; border-radius:8px; font:inherit; }}
+    .ai-panel select {{ padding:9px; border:1px solid #aac0bb; border-radius:8px; font:inherit; }}
+    .ai-panel button.secondary {{ background:#456b65; }}
+    .ai-panel .alert {{ color:#a51d16; font-weight:600; }}
     button.secondary {{ background:#e59b00; }} form {{ display:inline-block; margin:2px; }}
     .create-order {{ display:grid; grid-template-columns:1.2fr 1.4fr .7fr .7fr auto; gap:10px; align-items:end; margin-bottom:18px; }}
     .create-order label {{ display:grid; gap:5px; }}
@@ -702,9 +767,10 @@ async def central_dashboard(
         <form class="create-order" method="post" action="/central/ai/knowledge">
           <label>Título<input name="title" minlength="3" maxlength="100" required placeholder="Ex.: Reiniciar roteador"></label>
           <label>Orientação<input name="content" minlength="10" maxlength="1000" required placeholder="Resposta aprovada pela equipe"></label>
+          <label>Categoria<select name="category">{ai_category_options}</select></label>
           <button type="submit">ADICIONAR ORIENTAÇÃO</button>
         </form>
-        <table><thead><tr><th>Título</th><th>Orientação aprovada</th><th>Cadastro UTC</th></tr></thead><tbody>{ai_knowledge_rows}</tbody></table>
+        <table><thead><tr><th>Título</th><th>Orientação aprovada</th><th>Categoria</th><th>Cadastro UTC</th></tr></thead><tbody>{ai_knowledge_rows}</tbody></table>
         <h3>Testar uma pergunta</h3>
         <form class="create-order" method="post" action="/central/ai/drafts">
           <label>Pergunta do cliente<input name="question" minlength="3" maxlength="500" required placeholder="Ex.: Minha internet está sem conexão"></label>
@@ -1699,10 +1765,11 @@ async def central_create_ai_knowledge(
     fields = parse_qs((await request.body()).decode("utf-8"))
     title = fields.get("title", [""])[0].strip()
     content = fields.get("content", [""])[0].strip()
+    category = fields.get("category", ["outro"])[0].strip()
     if len(title) < 3 or len(title) > 100 or len(content) < 10 or len(content) > 1000:
         raise HTTPException(422, "invalid_ai_knowledge")
     ai_support_store.create_knowledge(
-        session["organization"]["id"], title, content
+        session["organization"]["id"], title, content, category
     )
     return RedirectResponse("/central#ai-support", status_code=303)
 
@@ -1720,6 +1787,108 @@ async def central_create_ai_draft(
         raise HTTPException(422, "invalid_ai_question")
     ai_support_store.create_draft(session["organization"]["id"], question)
     return RedirectResponse("/central#ai-support", status_code=303)
+
+
+@router.post("/central/chamados/{request_id}/ia/aprovar", include_in_schema=False)
+async def central_approve_ai_draft(
+    request_id: int,
+    request: Request,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    edited_answer = fields.get("edited_answer", [""])[0].strip()
+    draft = ai_support_store.get_draft_for_request(organization_id, str(request_id))
+    if draft is None:
+        raise HTTPException(404, "ai_draft_not_found")
+    try:
+        updated = ai_support_store.review_draft(
+            organization_id,
+            draft["id"],
+            "approved",
+            session["user"],
+            edited_answer=edited_answer,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    final_answer = updated["edited_answer"] or updated["answer"]
+    mark_answered(request_id, final_answer, organization_id)
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "ai_draft_approved",
+        f"chamado:{request_id}",
+        {
+            "draft_id": updated["id"],
+            "confidence": updated["confidence"],
+            "edited": bool(updated["edited_answer"]),
+        },
+    )
+    return RedirectResponse("/central#support", status_code=303)
+
+
+@router.post("/central/chamados/{request_id}/ia/rejeitar", include_in_schema=False)
+async def central_reject_ai_draft(
+    request_id: int,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    draft = ai_support_store.get_draft_for_request(organization_id, str(request_id))
+    if draft is None:
+        raise HTTPException(404, "ai_draft_not_found")
+    try:
+        ai_support_store.review_draft(
+            organization_id, draft["id"], "rejected", session["user"]
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "ai_draft_rejected",
+        f"chamado:{request_id}",
+        {"draft_id": draft["id"]},
+    )
+    return RedirectResponse("/central#support", status_code=303)
+
+
+@router.post("/central/chamados/{request_id}/ia/encaminhar", include_in_schema=False)
+async def central_forward_ai_draft(
+    request_id: int,
+    request: Request,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    forwarded_to = fields.get("forwarded_to", [""])[0].strip()
+    draft = ai_support_store.get_draft_for_request(organization_id, str(request_id))
+    if draft is None:
+        raise HTTPException(404, "ai_draft_not_found")
+    try:
+        ai_support_store.review_draft(
+            organization_id,
+            draft["id"],
+            "forwarded",
+            session["user"],
+            forwarded_to=forwarded_to,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    mark_forwarded(request_id, forwarded_to, organization_id)
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "ai_draft_forwarded",
+        f"chamado:{request_id}",
+        {"draft_id": draft["id"], "forwarded_to": forwarded_to},
+    )
+    return RedirectResponse("/central#support", status_code=303)
 
 
 @router.post(

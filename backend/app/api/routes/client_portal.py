@@ -326,6 +326,8 @@ async def client_portal(
             status = f"{order.code} • {_work_order_label(order.status.value)}"
         elif item["status"] == "converted":
             status = "OS gerada — aguardando atualização"
+        elif item["status"] == "answered":
+            status = "Respondido pela equipe"
         else:
             status = "Chamado recebido — aguardando a central"
         rows.append(
@@ -425,12 +427,16 @@ async def client_support_detail(
     else:
         rating_block = ""
     order_code = escape(order.code) if order is not None else "Aguardando geração da OS"
+    response_block = (
+        f"<div class='response'><h2>Resposta da equipe</h2><p>{escape(support_request['response'])}</p></div>"
+        if support_request.get("response") else ""
+    )
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Chamado #{request_id}</title>
-<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif}}header{{background:#075e54;color:white;padding:24px 5vw}}main{{width:min(700px,92vw);margin:24px auto}}section{{background:white;border-radius:14px;padding:20px;box-shadow:0 2px 10px #17332f18}}a{{color:#075e54}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:12px}}ol{{list-style:none;padding:0;margin:24px 0}}li{{display:flex;align-items:center;gap:12px;color:#80908c;padding:10px 0;border-left:3px solid #ccd8d5;margin-left:16px;padding-left:20px}}li span{{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:#dce6e3;color:#526561;font-weight:bold;margin-left:-38px}}li.done{{color:#075e54;border-color:#14a487;font-weight:bold}}li.done span{{background:#14a487;color:white}}.warning{{background:#fff0c2;padding:12px;border-radius:8px;color:#8a4b00}}.rating,.thanks{{margin-top:24px;padding-top:14px;border-top:1px solid #dce8e5}}.rating form,.rating label{{display:grid;gap:8px}}.rating form{{gap:14px}}select,textarea{{border:1px solid #aac0bb;border-radius:8px;padding:10px;font:inherit}}textarea{{min-height:90px}}button{{border:0;border-radius:8px;padding:11px;background:#075e54;color:white;font-weight:bold;cursor:pointer}}.stars{{font-size:30px;color:#e59b00}}</style></head>
+<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif}}header{{background:#075e54;color:white;padding:24px 5vw}}main{{width:min(700px,92vw);margin:24px auto}}section{{background:white;border-radius:14px;padding:20px;box-shadow:0 2px 10px #17332f18}}a{{color:#075e54}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:12px}}ol{{list-style:none;padding:0;margin:24px 0}}li{{display:flex;align-items:center;gap:12px;color:#80908c;padding:10px 0;border-left:3px solid #ccd8d5;margin-left:16px;padding-left:20px}}li span{{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:#dce6e3;color:#526561;font-weight:bold;margin-left:-38px}}li.done{{color:#075e54;border-color:#14a487;font-weight:bold}}li.done span{{background:#14a487;color:white}}.warning{{background:#fff0c2;padding:12px;border-radius:8px;color:#8a4b00}}.rating,.thanks,.response{{margin-top:24px;padding-top:14px;border-top:1px solid #dce8e5}}.response{{background:#f5fbfa;border-radius:8px;padding:14px;border-top:0}}.rating form,.rating label{{display:grid;gap:8px}}.rating form{{gap:14px}}select,textarea{{border:1px solid #aac0bb;border-radius:8px;padding:10px;font:inherit}}textarea{{min-height:90px}}button{{border:0;border-radius:8px;padding:11px;background:#075e54;color:white;font-weight:bold;cursor:pointer}}.stars{{font-size:30px;color:#e59b00}}</style></head>
 <body><header><h1>Chamado #{request_id}</h1><div>{escape(support_request['subject'])}</div></header><main>
 <p><a href="{portal_path}">← Voltar ao portal</a> • <a href="{portal_path}/chamados/{request_id}">Atualizar andamento</a></p><p class="simulation"><b>MODO SIMULADO</b> — use “Atualizar andamento” quando desejar consultar novamente.</p>
-<section><p><b>Ordem de serviço:</b> {order_code}</p><p><b>Descrição:</b> {escape(support_request['description'])}</p>{exceptional}
+<section><p><b>Ordem de serviço:</b> {order_code}</p><p><b>Descrição:</b> {escape(support_request['description'])}</p>{exceptional}{response_block}
 <h2>Andamento do atendimento</h2><ol>{progress}</ol>{rating_block}</section></main></body></html>"""
 
 
