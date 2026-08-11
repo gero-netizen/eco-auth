@@ -37,6 +37,13 @@ class TrustUnlockStore:
                 )
                 """
             )
+            unlock_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(trust_unlocks)")
+            }
+            if "notified_before_relock" not in unlock_columns:
+                connection.execute(
+                    "ALTER TABLE trust_unlocks ADD COLUMN notified_before_relock INTEGER NOT NULL DEFAULT 0"
+                )
             if columns and "organization_id" not in columns:
                 connection.execute(
                     """
@@ -58,7 +65,9 @@ class TrustUnlockStore:
         connection.row_factory = sqlite3.Row
         return connection
 
-    def create(self, client_uuid: str, login: str, reason: str) -> dict:
+    def create(
+        self, client_uuid: str, login: str, reason: str, duration_hours: int = 48
+    ) -> dict:
         unlocked_at = datetime.now(timezone.utc)
         record = {
             "organization_id": get_current_organization(),
@@ -67,7 +76,7 @@ class TrustUnlockStore:
             "login": login,
             "reason": reason,
             "unlocked_at": unlocked_at.isoformat(),
-            "expires_at": (unlocked_at + timedelta(hours=48)).isoformat(),
+            "expires_at": (unlocked_at + timedelta(hours=duration_hours)).isoformat(),
             "status": "active",
         }
         with self._connect() as connection:
@@ -84,6 +93,58 @@ class TrustUnlockStore:
                 record,
             )
         return record
+
+    def count_since(self, login: str, since: datetime) -> int:
+        organization_id = get_current_organization()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) FROM trust_unlocks
+                WHERE organization_id = ? AND lower(login) = lower(?)
+                  AND unlocked_at >= ? AND status != 'cancelled'
+                """,
+                (organization_id, login, since.isoformat()),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def get_most_recent_by_login(self, login: str) -> dict | None:
+        organization_id = get_current_organization()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM trust_unlocks
+                WHERE organization_id = ? AND lower(login) = lower(?)
+                ORDER BY unlocked_at DESC LIMIT 1
+                """,
+                (organization_id, login),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_expiring_soon(self, organization_id: str, within_minutes: int) -> list[dict]:
+        now = datetime.now(timezone.utc)
+        cutoff = (now + timedelta(minutes=within_minutes)).isoformat()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM trust_unlocks
+                WHERE organization_id = ? AND status = 'active'
+                  AND expires_at <= ? AND expires_at > ?
+                  AND notified_before_relock = 0
+                ORDER BY expires_at
+                """,
+                (organization_id, cutoff, now.isoformat()),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_notified(self, organization_id: str, record_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE trust_unlocks SET notified_before_relock = 1
+                WHERE organization_id = ? AND id = ?
+                """,
+                (organization_id, record_id),
+            )
 
     def list_recent(self) -> list[dict]:
         organization_id = get_current_organization()

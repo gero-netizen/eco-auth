@@ -14,6 +14,11 @@ from app.api.routes.financial import (
 )
 from app.core.organization_store import organization_store
 from app.core.integration_config_store import get_integration_settings
+from app.core.config import get_settings
+from app.core.audit_store import audit_store
+from app.core.tenant_context import set_current_organization
+from app.core.trust_unlock_store import TrustUnlockStore
+from app.core.trust_unlock_orchestrator import request_trust_unlock
 from app.core.financial_payment_store import financial_payment_store
 from app.core.mercado_pago_config_store import mercado_pago_config_store
 from app.core.portal_customer_store import portal_customer_store
@@ -694,10 +699,40 @@ async def portal_trust_unlock(
 ) -> RedirectResponse:
     organization, portal_path = _portal_organization(organization_slug)
     customer = _authenticated_customer(request, organization, organization_slug)
-    trust_unlock_account(
-        customer["id"],
-        organization_id=organization["id"],
-    )
+    organization_id = organization["id"]
+    login = str(customer.get("external_login") or "").strip()
+    settings = get_integration_settings(organization_id)
+    if login and settings.mkauth_mode == "real" and settings.mkauth_writes_enabled:
+        set_current_organization(organization_id)
+        client = MkAuthApiClient(
+            settings.mkauth_base_url,
+            settings.mkauth_client_id,
+            settings.mkauth_client_secret,
+            settings.mkauth_verify_ssl,
+            settings.mkauth_allow_http and settings.app_env == "development",
+        )
+        try:
+            result = await request_trust_unlock(
+                organization_id,
+                TrustUnlockStore(get_settings().database_url),
+                client,
+                login,
+                "Solicitado pelo cliente no portal",
+            )
+        except (ValueError, httpx.HTTPError):
+            result = {"status": "error"}
+        audit_store.record(
+            organization_id,
+            {"id": customer["id"], "name": customer.get("name") or login, "username": login, "role": "customer"},
+            "trust_unlock_requested_portal",
+            f"login:{login}",
+            {"result": result["status"]},
+        )
+    else:
+        trust_unlock_account(
+            customer["id"],
+            organization_id=organization_id,
+        )
     return RedirectResponse(portal_path, status_code=303)
 
 

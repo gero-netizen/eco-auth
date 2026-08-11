@@ -42,6 +42,7 @@ from app.core.whatsapp_consent_store import whatsapp_consent_store
 from app.core.whatsapp_message_store import whatsapp_message_store
 from app.core.whatsapp_orchestrator import send_whatsapp_message
 from app.core.mercado_pago_config_store import mercado_pago_config_store
+from app.core.trust_unlock_rules_store import trust_unlock_rules_store
 from app.core.financial_payment_store import financial_payment_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
@@ -205,6 +206,7 @@ async def central_dashboard(
         for account in financial_accounts
     )
     mercado_pago_config = mercado_pago_config_store.get(organization_id)
+    trust_unlock_rules = trust_unlock_rules_store.get(organization_id)
     if not mercado_pago_config.access_token:
         mercado_pago_status = "Pix real ainda não configurado — pagamentos continuam apenas conferidos manualmente."
     elif not mercado_pago_config.enabled:
@@ -901,6 +903,16 @@ async def central_dashboard(
       <section class="module-panel" data-module="financial">
         <h2>Financeiro e desbloqueio</h2>
         <table><thead><tr><th>Cliente fictício</th><th>Fatura</th><th>Situação</th><th>Acesso</th><th>Simulações</th></tr></thead><tbody>{financial_rows}</tbody></table>
+        <h3>Regras de desbloqueio de confiança</h3>
+        <form class="create-order" method="post" action="/central/financeiro/desbloqueio-confianca/regras">
+          <label>Duração da liberação (horas)<input type="number" name="duration_hours" min="1" max="720" value="{trust_unlock_rules.duration_hours}" required></label>
+          <label>Máximo de liberações por mês<input type="number" name="max_unlocks_per_month" min="1" max="30" value="{trust_unlock_rules.max_unlocks_per_month}" required></label>
+          <label>Dívida máxima permitida (R$)<input type="number" step="0.01" name="max_debt_amount" min="0.01" value="{trust_unlock_rules.max_debt_amount}" required></label>
+          <label>Máximo de títulos vencidos<input type="number" name="max_overdue_titles" min="1" max="50" value="{trust_unlock_rules.max_overdue_titles}" required></label>
+          <label>Intervalo mínimo entre pedidos (horas)<input type="number" name="min_interval_hours" min="0" max="720" value="{trust_unlock_rules.min_interval_hours}" required></label>
+          <label>Avisar antes de rebloquear (minutos)<input type="number" name="notify_before_relock_minutes" min="0" max="1440" value="{trust_unlock_rules.notify_before_relock_minutes}" required></label>
+          <button type="submit">SALVAR REGRAS</button>
+        </form>
         <h3>Histórico de desbloqueios de confiança MK-AUTH</h3>
         <button type="button" id="load-trust-unlocks">ATUALIZAR HISTÓRICO</button>
         <table><thead><tr><th>Login</th><th>Motivo</th><th>Desbloqueado em UTC</th><th>Validade UTC</th><th>Status</th><th>Ação</th></tr></thead><tbody id="trust-unlocks-body"><tr><td colspan="6">Consulta ainda não realizada.</td></tr></tbody></table>
@@ -2037,6 +2049,55 @@ async def central_rate_ai_draft(
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error)) from error
     return RedirectResponse("/central#ai-support", status_code=303)
+
+
+@router.post(
+    "/central/financeiro/desbloqueio-confianca/regras", include_in_schema=False
+)
+async def central_save_trust_unlock_rules(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    try:
+        duration_hours = int(fields.get("duration_hours", ["48"])[0])
+        max_unlocks_per_month = int(fields.get("max_unlocks_per_month", ["2"])[0])
+        max_debt_amount = float(fields.get("max_debt_amount", ["400"])[0])
+        max_overdue_titles = int(fields.get("max_overdue_titles", ["3"])[0])
+        min_interval_hours = int(fields.get("min_interval_hours", ["72"])[0])
+        notify_before_relock_minutes = int(
+            fields.get("notify_before_relock_minutes", ["120"])[0]
+        )
+    except ValueError as error:
+        raise HTTPException(422, "invalid_trust_unlock_rules") from error
+    try:
+        trust_unlock_rules_store.save(
+            organization_id,
+            duration_hours=duration_hours,
+            max_unlocks_per_month=max_unlocks_per_month,
+            max_debt_amount=max_debt_amount,
+            max_overdue_titles=max_overdue_titles,
+            min_interval_hours=min_interval_hours,
+            notify_before_relock_minutes=notify_before_relock_minutes,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "trust_unlock_rules_updated",
+        "trust_unlock_rules",
+        {
+            "duration_hours": duration_hours,
+            "max_unlocks_per_month": max_unlocks_per_month,
+            "max_debt_amount": max_debt_amount,
+            "max_overdue_titles": max_overdue_titles,
+            "min_interval_hours": min_interval_hours,
+            "notify_before_relock_minutes": notify_before_relock_minutes,
+        },
+    )
+    return RedirectResponse("/central#financial", status_code=303)
 
 
 @router.post("/central/financeiro/mercadopago/config", include_in_schema=False)

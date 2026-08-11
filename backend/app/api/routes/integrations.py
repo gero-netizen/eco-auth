@@ -1,16 +1,24 @@
 import asyncio
-from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from app.api.routes.central_auth import require_central_access, require_central_roles
+from app.api.routes.central_auth import (
+    require_central_access,
+    require_central_roles,
+    require_central_session,
+)
 from app.core.audit_store import audit_store
 from app.core.config import get_settings
 from app.core.pix_simulation_store import PixSimulationStore
 from app.core.trust_unlock_store import TrustUnlockStore
+from app.core.trust_unlock_orchestrator import request_trust_unlock
+from app.core.trust_unlock_rules_store import trust_unlock_rules_store
+from app.core.organization_store import organization_store
+from app.core.tenant_context import set_current_organization
+from app.core.whatsapp_orchestrator import send_whatsapp_message
 from app.api.routes.notifications import record_simulated_payment_message
 from app.integrations.mkauth.api_client import MkAuthApiClient
 from app.integrations.routeros.client import RouterOsReadOnlyClient
@@ -218,12 +226,16 @@ async def create_mkauth_pix_payment(
 
 
 @router.post("/mkauth/trust-unlock")
-async def create_mkauth_trust_unlock(request: TrustUnlockRequest) -> dict:
+async def create_mkauth_trust_unlock(
+    request: TrustUnlockRequest,
+    session: dict = Depends(require_central_session),
+) -> dict:
     settings = _tenant_integration_settings()
     if not request.confirmed:
         return {"status": "confirmation_required"}
     if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
         return {"status": "writes_disabled"}
+    organization_id = session["organization"]["id"]
     try:
         client = MkAuthApiClient(
             settings.mkauth_base_url,
@@ -232,28 +244,23 @@ async def create_mkauth_trust_unlock(request: TrustUnlockRequest) -> dict:
             settings.mkauth_verify_ssl,
             settings.mkauth_allow_http and settings.app_env == "development",
         )
-        details = await client.get_client_details(request.login)
-        blocked = str(details.get("bloqueado") or "").strip().casefold()
-        cut_status = str(details.get("status_corte") or "").strip().casefold()
-        blocked_indicators = {"s", "sim", "1", "true", "bloq", "bloqueado"}
-        if blocked not in blocked_indicators and cut_status not in blocked_indicators:
-            return {"status": "not_blocked"}
-        expires_at = datetime.now() + timedelta(hours=48)
-        await client.set_client_trust_observation(
-            request.client_uuid,
-            True,
-            expires_at,
-        )
-        updated_details = await client.get_client_details(request.login)
-        observation = str(updated_details.get("observacao") or "").strip().casefold()
-        if observation not in {"s", "sim", "1", "true", "ativo"}:
-            return {"status": "error", "reason": "mkauth_unblock_not_confirmed"}
-        audit = _trust_unlock_store().create(
-            request.client_uuid, request.login, request.reason.strip()
+        result = await request_trust_unlock(
+            organization_id,
+            _trust_unlock_store(),
+            client,
+            request.login,
+            request.reason.strip(),
         )
     except (ValueError, httpx.HTTPError) as error:
         return {"status": "error", "reason": str(error) or "mkauth_trust_unlock_failed"}
-    return {"status": "unlocked", "valid_hours": 48, "audit": audit}
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "trust_unlock_requested_manual",
+        f"login:{request.login}",
+        {"result": result["status"]},
+    )
+    return result
 
 
 @router.get("/mkauth/trust-unlocks")
@@ -296,28 +303,57 @@ async def cancel_mkauth_trust_unlock(
 
 
 async def reconcile_expired_trust_unlocks() -> int:
-    settings = _tenant_integration_settings()
-    if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
-        return 0
-    store = _trust_unlock_store()
-    expired = store.list_expired_active()
-    if not expired:
-        return 0
-    client = MkAuthApiClient(
-        settings.mkauth_base_url,
-        settings.mkauth_client_id,
-        settings.mkauth_client_secret,
-        settings.mkauth_verify_ssl,
-        settings.mkauth_allow_http and settings.app_env == "development",
-    )
+    """Roda periodicamente (ver main.py) para todos os provedores ativos —
+    antes só processava o provedor padrão, deixando os demais provedores do
+    SaaS sem re-bloqueio automático."""
     completed = 0
-    for record in expired:
-        try:
-            await client.set_client_trust_observation(record["client_uuid"], False)
-        except (ValueError, httpx.HTTPError):
+    for organization in organization_store.list_all():
+        if not organization.get("active"):
             continue
-        store.mark_expired(record["id"])
-        completed += 1
+        organization_id = organization["id"]
+        settings = get_integration_settings(organization_id)
+        if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
+            continue
+        set_current_organization(organization_id)
+        store = _trust_unlock_store()
+
+        rules = trust_unlock_rules_store.get(organization_id)
+        for about_to_expire in store.list_expiring_soon(
+            organization_id, rules.notify_before_relock_minutes
+        ):
+            send_whatsapp_message(
+                organization_id,
+                "Seu acesso liberado por confiança está prestes a expirar. "
+                "Regularize o pagamento para evitar um novo bloqueio.",
+                "trust_unlock_expiring_soon",
+                login=about_to_expire["login"],
+            )
+            store.mark_notified(organization_id, about_to_expire["id"])
+
+        expired = store.list_expired_active()
+        if not expired:
+            continue
+        client = MkAuthApiClient(
+            settings.mkauth_base_url,
+            settings.mkauth_client_id,
+            settings.mkauth_client_secret,
+            settings.mkauth_verify_ssl,
+            settings.mkauth_allow_http and settings.app_env == "development",
+        )
+        for record in expired:
+            try:
+                await client.set_client_trust_observation(record["client_uuid"], False)
+            except (ValueError, httpx.HTTPError):
+                continue
+            store.mark_expired(record["id"])
+            audit_store.record(
+                organization_id,
+                {"id": "system", "name": "Reconciliação automática", "username": "system", "role": "system"},
+                "trust_unlock_expired_relocked",
+                f"login:{record['login']}",
+                {"unlock_id": record["id"]},
+            )
+            completed += 1
     return completed
 
 

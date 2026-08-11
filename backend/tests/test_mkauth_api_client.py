@@ -404,17 +404,28 @@ def test_trust_unlock_requires_blocked_client_and_records_audit(monkeypatch) -> 
             reads += 1
             return {
                 "login": login,
+                "uuid": "customer-uuid-1",
                 "bloqueado": "-",
                 "status_corte": "bloq",
                 "observacao": "nao" if reads == 1 else "sim",
+                "ativo": "sim",
             }
 
         async def set_client_trust_observation(self, client_uuid: str, enabled: bool, expires_at=None) -> dict:
             writes.append((client_uuid, enabled, expires_at is not None))
             return {"status": "sucesso"}
 
+        async def list_titles_by_situation(self, login: str, situation: str) -> list[dict]:
+            return []
+
     class StubStore:
-        def create(self, client_uuid: str, login: str, reason: str) -> dict:
+        def get_most_recent_by_login(self, login: str):
+            return None
+
+        def count_since(self, login: str, since) -> int:
+            return 0
+
+        def create(self, client_uuid: str, login: str, reason: str, duration_hours: int = 48) -> dict:
             return {"client_uuid": client_uuid, "login": login, "reason": reason, "status": "active"}
 
     monkeypatch.setattr(integrations, "get_settings", lambda: settings)
@@ -426,7 +437,13 @@ def test_trust_unlock_requires_blocked_client_and_records_audit(monkeypatch) -> 
         reason="Solicitação do cliente",
         confirmed=True,
     )
-    response = asyncio.run(integrations.create_mkauth_trust_unlock(request))
+    fake_session = {
+        "organization": {"id": "g7-networks"},
+        "user": {"id": "admin-1", "name": "Admin", "username": "admin", "role": "owner"},
+    }
+    response = asyncio.run(
+        integrations.create_mkauth_trust_unlock(request, session=fake_session)
+    )
 
     assert response["status"] == "unlocked"
     assert response["valid_hours"] == 48
@@ -456,13 +473,26 @@ def test_expired_trust_unlock_is_reblocked_and_marked_expired(monkeypatch) -> No
             return {"status": "sucesso"}
 
     class StubStore:
+        def list_expiring_soon(self, organization_id: str, within_minutes: int) -> list[dict]:
+            return []
+
         def list_expired_active(self) -> list[dict]:
-            return [{"id": "unlock-1", "client_uuid": "customer-uuid-1"}]
+            return [
+                {"id": "unlock-1", "client_uuid": "customer-uuid-1", "login": "cliente.pppoe"}
+            ]
 
         def mark_expired(self, record_id: str) -> None:
             marked.append(record_id)
 
+    class StubOrganizationStore:
+        def list_all(self) -> list[dict]:
+            return [{"id": "g7-networks", "active": 1}]
+
     monkeypatch.setattr(integrations, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        integrations, "get_integration_settings", lambda organization_id=None: settings
+    )
+    monkeypatch.setattr(integrations, "organization_store", StubOrganizationStore())
     monkeypatch.setattr(integrations, "MkAuthApiClient", StubClient)
     monkeypatch.setattr(integrations, "_trust_unlock_store", lambda: StubStore())
     completed = asyncio.run(integrations.reconcile_expired_trust_unlocks())
