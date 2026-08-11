@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 from app.api.routes.technician_auth import require_technician
 from app.api.routes.central_auth import require_central_roles
 from app.core.config import get_settings
+from app.core.customer_location_store import customer_location_store
 from app.core.sync_store import SyncOperationStore
+from app.core.tenant_context import get_current_organization
 from app.domain.models import WorkOrder
 from app.integrations.mkauth.client import simulated_mkauth_gateway
 
@@ -33,7 +35,14 @@ async def create_simulated_work_order(
     scheduled_at: datetime | None = None,
     external_customer_id: str | None = None,
     external_ticket_id: str | None = None,
+    organization_id: str | None = None,
 ) -> WorkOrder:
+    if latitude is None and longitude is None and external_customer_id:
+        confirmed = customer_location_store.get(
+            organization_id or get_current_organization(), external_customer_id
+        )
+        if confirmed:
+            latitude, longitude = confirmed["latitude"], confirmed["longitude"]
     order = await simulated_mkauth_gateway.create_work_order(
         customer_name.strip(),
         address.strip(),

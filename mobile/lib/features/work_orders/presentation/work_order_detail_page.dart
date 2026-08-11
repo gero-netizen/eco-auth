@@ -222,12 +222,71 @@ class _WorkOrderDetailPageState extends State<WorkOrderDetailPage> {
     return confirmed == true;
   }
 
+  /// Estados que encerram uma visita presencial (concluída ou não). Nesses
+  /// casos a localização do cliente é obrigatória — facilita muito a
+  /// próxima visita ao mesmo endereço.
+  static const _onSiteClosingStatuses = {
+    WorkOrderStatus.completed,
+    WorkOrderStatus.notCompleted,
+  };
+
+  Future<_LocationRequirementOutcome> _requireLocationForClosing() async {
+    while (true) {
+      final location = await _locationService.captureOptional();
+      if (location != null) {
+        return _LocationRequirementOutcome(location: location);
+      }
+      if (!mounted) return const _LocationRequirementOutcome(cancelled: true);
+      final choice = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Localização necessária'),
+          content: const Text(
+            'Não foi possível obter sua localização atual. Verifique se o '
+            'GPS do aparelho está ligado e se o app tem permissão de '
+            'localização.\n\nA localização confirmada agora ajuda a '
+            'encontrar este cliente mais rápido na próxima visita.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'cancel'),
+              child: const Text('CANCELAR'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'skip'),
+              child: const Text('CONTINUAR SEM LOCALIZAÇÃO'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, 'retry'),
+              child: const Text('TENTAR NOVAMENTE'),
+            ),
+          ],
+        ),
+      );
+      if (choice == 'retry') continue;
+      if (choice == 'skip') return const _LocationRequirementOutcome();
+      return const _LocationRequirementOutcome(cancelled: true);
+    }
+  }
+
   Future<void> _transitionTo(WorkOrderStatus status) async {
     if (status == WorkOrderStatus.completed &&
         !await _confirmIncompleteChecklist()) {
       return;
     }
     if (!mounted) return;
+
+    CapturedLocation? closingLocation;
+    var hasClosingLocation = false;
+    if (_onSiteClosingStatuses.contains(status)) {
+      final outcome = await _requireLocationForClosing();
+      if (outcome.cancelled) return;
+      closingLocation = outcome.location;
+      hasClosingLocation = true;
+    }
+    if (!mounted) return;
+
     var typedNote = '';
     final confirmed = await showDialog<bool>(
       context: context,
@@ -256,7 +315,9 @@ class _WorkOrderDetailPageState extends State<WorkOrderDetailPage> {
     if (confirmed != true || !mounted) return;
 
     setState(() => _saving = true);
-    final location = await _locationService.captureOptional();
+    final location = hasClosingLocation
+        ? closingLocation
+        : await _locationService.captureOptional();
     final note = typedNote.trim();
     try {
       await widget.onTransition(
@@ -487,4 +548,15 @@ String _formatHistoryDate(DateTime value) {
   String two(int number) => number.toString().padLeft(2, '0');
   return '${two(local.day)}/${two(local.month)}/${local.year} '
       '${two(local.hour)}:${two(local.minute)}';
+}
+
+/// Resultado de [_WorkOrderDetailPageState._requireLocationForClosing]:
+/// [location] preenchido quando o GPS foi capturado; [cancelled] true
+/// quando o técnico desistiu de concluir a visita; nenhum dos dois quando
+/// o técnico optou explicitamente por continuar sem localização.
+class _LocationRequirementOutcome {
+  const _LocationRequirementOutcome({this.location, this.cancelled = false});
+
+  final CapturedLocation? location;
+  final bool cancelled;
 }

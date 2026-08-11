@@ -245,7 +245,9 @@ class SimulatedMkAuthGateway(MkAuthGateway):
         to_status: WorkOrderStatus,
         base_version: int | None,
         organization_id: str | None = None,
-    ) -> WorkOrder:
+        latitude: float | None = None,
+        longitude: float | None = None,
+    ) -> tuple[WorkOrder, WorkOrderStatus]:
         current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             row = connection.execute(
@@ -260,11 +262,17 @@ class SimulatedMkAuthGateway(MkAuthGateway):
         current = self._from_row(row)
         if base_version is not None and base_version != current.version:
             raise ValueError("version_conflict")
+        location_update = (
+            {"latitude": latitude, "longitude": longitude}
+            if latitude is not None and longitude is not None
+            else {}
+        )
         updated = current.model_copy(
             update={
                 "status": to_status,
                 "version": current.version + 1,
                 "updated_at": datetime.now(timezone.utc),
+                **location_update,
             }
         )
         with self._connect() as connection:
@@ -284,7 +292,7 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                     current_organization_id,
                 ),
             )
-        return updated
+        return updated, current.status
 
     async def assign_work_order(
         self,

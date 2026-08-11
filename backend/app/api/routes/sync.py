@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.routes.technician_auth import require_technician
 from app.core.config import get_settings
+from app.core.customer_location_store import customer_location_store
 from app.core.sync_store import SyncOperationStore
+from app.core.work_order_history_store import work_order_history_store
 from app.domain.models import (
     OperationResult,
     SyncPushRequest,
@@ -19,6 +21,11 @@ router = APIRouter(
 )
 _operation_store = SyncOperationStore(get_settings().database_url)
 
+# Estados que representam o encerramento de uma visita presencial. Nesses
+# momentos, se o técnico capturou GPS, a localização do cliente é atualizada
+# para facilitar a próxima visita.
+_ON_SITE_CLOSING_STATUSES = {WorkOrderStatus.COMPLETED, WorkOrderStatus.NOT_COMPLETED}
+
 
 @router.post("/push", response_model=SyncPushResponse)
 async def push(
@@ -33,12 +40,42 @@ async def push(
             change = None
             try:
                 if operation.entity_type == "work_order" and operation.kind == "transition":
-                    updated = await simulated_mkauth_gateway.transition_work_order(
+                    note = operation.payload.get("note")
+                    latitude = operation.payload.get("latitude")
+                    longitude = operation.payload.get("longitude")
+                    to_status = WorkOrderStatus(operation.payload["to_status"])
+                    updated, from_status = await simulated_mkauth_gateway.transition_work_order(
                         operation.entity_id,
-                        WorkOrderStatus(operation.payload["to_status"]),
+                        to_status,
                         operation.base_version,
                         technician["organization_id"],
+                        latitude=latitude,
+                        longitude=longitude,
                     )
+                    work_order_history_store.record(
+                        technician["organization_id"],
+                        updated.id,
+                        to_status.value,
+                        from_status=from_status.value,
+                        note=note,
+                        latitude=latitude,
+                        longitude=longitude,
+                        technician_id=technician["id"],
+                    )
+                    if (
+                        to_status in _ON_SITE_CLOSING_STATUSES
+                        and latitude is not None
+                        and longitude is not None
+                        and updated.external_customer_id
+                    ):
+                        customer_location_store.confirm(
+                            technician["organization_id"],
+                            updated.external_customer_id,
+                            latitude,
+                            longitude,
+                            source_work_order_id=updated.id,
+                            confirmed_by_technician_id=technician["id"],
+                        )
                     server_version = updated.version
                     change = {
                         "entity_type": "work_order",
