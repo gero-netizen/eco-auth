@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/auth/technician_session.dart';
+import '../core/config/server_config.dart';
 import '../features/auth/presentation/technician_login_page.dart';
 import '../features/work_orders/data/work_order_repository.dart';
 import '../features/work_orders/presentation/work_order_list_page.dart';
@@ -30,6 +31,7 @@ class _IspFieldAppState extends State<IspFieldApp> {
   }
 
   Future<void> _restoreSession() async {
+    await ServerConfig.restore();
     final restored = await TechnicianSession.restore();
     if (!mounted) return;
     setState(() {

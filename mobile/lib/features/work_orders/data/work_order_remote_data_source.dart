@@ -1,7 +1,7 @@
 import 'package:dio/dio.dart';
 import 'dart:io';
 
-import '../../../core/config/api_config.dart';
+import '../../../core/config/server_config.dart';
 import '../../../core/auth/technician_session.dart';
 import '../domain/work_order.dart';
 import '../../../core/sync/sync_operation.dart';
@@ -31,7 +31,7 @@ class WorkOrderRemoteDataSource {
   static Dio _buildDefaultDio() {
     final dio = Dio(
       BaseOptions(
-        baseUrl: apiBaseUrl,
+        baseUrl: ServerConfig.baseUrl,
         connectTimeout: const Duration(seconds: 5),
         receiveTimeout: const Duration(seconds: 10),
       ),
@@ -53,7 +53,7 @@ class WorkOrderRemoteDataSource {
   final Dio _dio;
 
   Future<List<WorkOrder>> fetchAll() async {
-    if (apiBaseUrl.isEmpty) {
+    if (ServerConfig.baseUrl.isEmpty) {
       throw StateError('API_BASE_URL não foi configurada');
     }
 
@@ -67,7 +67,7 @@ class WorkOrderRemoteDataSource {
   Future<List<Map<String, dynamic>>> push(
     List<SyncOperation> operations,
   ) async {
-    if (apiBaseUrl.isEmpty) {
+    if (ServerConfig.baseUrl.isEmpty) {
       throw StateError('API_BASE_URL não foi configurada');
     }
     if (operations.isEmpty) return const [];
@@ -86,7 +86,7 @@ class WorkOrderRemoteDataSource {
   }
 
   Future<SyncPullResult> pull(String? cursor) async {
-    if (apiBaseUrl.isEmpty) {
+    if (ServerConfig.baseUrl.isEmpty) {
       throw StateError('API_BASE_URL não foi configurada');
     }
     final response = await _dio.get<Map<String, dynamic>>(
@@ -138,7 +138,7 @@ class WorkOrderRemoteDataSource {
   }
 
   Future<List<InventoryItem>> fetchInventory() async {
-    if (apiBaseUrl.isEmpty) {
+    if (ServerConfig.baseUrl.isEmpty) {
       throw StateError('API_BASE_URL não foi configurada');
     }
     final response = await _dio.get<List<dynamic>>('/api/v1/inventory');

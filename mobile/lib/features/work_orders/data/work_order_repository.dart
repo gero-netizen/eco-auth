@@ -212,8 +212,10 @@ class WorkOrderRepository implements WorkOrderRepositoryContract {
         await _remote.uploadEvidence(evidence);
         await _local.setEvidenceState(evidence.id, 'uploaded');
       } catch (_) {
+        // Falha em um anexo não pode travar o restante da fila nem a
+        // sincronização geral (ordens de serviço, estoque). O item volta
+        // para 'pending' e é reenviado automaticamente na próxima sync.
         await _local.setEvidenceState(evidence.id, 'pending');
-        rethrow;
       }
     }
     for (final scan in await _local.pendingEquipmentScans()) {
@@ -223,7 +225,6 @@ class WorkOrderRepository implements WorkOrderRepositoryContract {
         await _local.setEquipmentScanState(scan.id, 'uploaded');
       } catch (_) {
         await _local.setEquipmentScanState(scan.id, 'pending');
-        rethrow;
       }
     }
   }

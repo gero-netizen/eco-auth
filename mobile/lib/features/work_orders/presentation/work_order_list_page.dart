@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
 
-import '../../../core/config/api_config.dart';
+import '../../../core/config/server_config.dart';
 import '../../../core/auth/technician_session.dart';
 import '../../../core/database/work_order_database.dart';
 import '../../../core/navigation/route_launcher.dart';
@@ -150,7 +150,7 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
       if (mounted) setState(() => _error = error.toString());
     }
 
-    if (apiBaseUrl.isNotEmpty) await _synchronize();
+    if (ServerConfig.baseUrl.isNotEmpty) await _synchronize();
   }
 
   Future<void> _synchronize() async {
@@ -332,7 +332,7 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
       if (mounted) setState(() => _orders = cached);
     }
     await _refreshPendingCount();
-    if (changed == true && apiBaseUrl.isNotEmpty) await _synchronize();
+    if (changed == true && ServerConfig.baseUrl.isNotEmpty) await _synchronize();
   }
 
   Future<void> _startRoute() async {

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../../core/config/api_config.dart';
+import '../../../core/config/server_config.dart';
 import '../domain/inventory_item.dart';
 
 class InventoryPage extends StatefulWidget {
@@ -35,7 +35,7 @@ class _InventoryPageState extends State<InventoryPage> {
   Future<void> _load() async {
     final cached = await widget.loadCached();
     if (mounted) setState(() => _items = cached);
-    if (apiBaseUrl.isNotEmpty) await _synchronize();
+    if (ServerConfig.baseUrl.isNotEmpty) await _synchronize();
   }
 
   Future<void> _synchronize() async {
@@ -92,7 +92,7 @@ class _InventoryPageState extends State<InventoryPage> {
       await widget.consume(item.id, quantity);
       final cached = await widget.loadCached();
       if (mounted) setState(() => _items = cached);
-      if (apiBaseUrl.isNotEmpty) await _synchronize();
+      if (ServerConfig.baseUrl.isNotEmpty) await _synchronize();
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
