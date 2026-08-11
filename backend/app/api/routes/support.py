@@ -7,7 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from app.api.routes.work_orders import create_simulated_work_order
 from app.api.routes.central_auth import require_central_roles
-from app.core.ai_support_store import ai_support_store
+from app.core.ai_orchestrator import create_draft_for_ticket
 from app.core.config import get_settings
 from app.core.organization_store import organization_store
 from app.core.portal_session import require_portal_customer
@@ -133,10 +133,10 @@ def create_support_request(
         ).lastrowid
     # Um rascunho é preparado assim que o chamado chega. Nada sai para o
     # cliente até um atendente aprovar (ver ai_support_store.review_draft).
-    ai_support_store.create_draft(
-        current_organization_id,
-        f"{subject}\n\n{description}",
-        support_request_id=str(request_id),
+    # A IA real do provedor é tentada primeiro; se não estiver configurada,
+    # sem orçamento no mês, ou indisponível, cai para a correspondência local.
+    create_draft_for_ticket(
+        current_organization_id, f"{subject}\n\n{description}", str(request_id)
     )
     return int(request_id)
 

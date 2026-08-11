@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     default_organization_name: str = "G7 Networks"
     default_organization_slug: str = "g7-networks"
     integration_encryption_key: str = ""
+    ai_request_timeout_seconds: float = 8.0
+    ai_default_model: str = "claude-sonnet-4-5"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

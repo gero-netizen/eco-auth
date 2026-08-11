@@ -38,6 +38,8 @@ from app.core.portal_customer_store import portal_customer_store
 from app.core.portal_invite_store import portal_invite_store
 from app.core.organization_store import organization_store
 from app.core.ai_support_store import CATEGORIES, CATEGORY_LABELS, ai_support_store
+from app.core.ai_provider_store import SUPPORTED_MODELS, ai_provider_store
+from app.core.ai_usage_store import ai_usage_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -76,6 +78,8 @@ async def central_dashboard(
     support_requests = list_support_requests(organization_id=organization_id)
     ai_knowledge = ai_support_store.list_knowledge(organization_id)
     ai_drafts = ai_support_store.list_drafts(organization_id)
+    ai_config = ai_provider_store.get(organization_id)
+    ai_usage = ai_usage_store.get_usage(organization_id)
     network_alerts = list_active_alerts(organization_id)
     technicians = technician_store.list_all(organization_id)
     integration_config_store.ensure_unconfigured(organization_id)
@@ -213,6 +217,16 @@ async def central_dashboard(
     )
     forward_sector_options = ai_category_options
     confidence_labels = {"low": "Baixa", "medium": "Média", "high": "Alta"}
+    ai_model_options = "".join(
+        f"<option value='{model}' {'selected' if model == ai_config.model else ''}>{model}</option>"
+        for model in SUPPORTED_MODELS
+    )
+    if not ai_config.api_key:
+        ai_config_status = "IA real ainda não configurada — usando somente a base de conhecimento local."
+    elif not ai_config.enabled:
+        ai_config_status = "Chave configurada, mas IA real está desativada — usando somente a base de conhecimento local."
+    else:
+        ai_config_status = f"IA real ativa com o modelo {escape(ai_config.model)}."
 
     def support_ai_panel(item: dict) -> str:
         draft = ai_support_store.get_draft_for_request(organization_id, str(item["id"]))
@@ -281,11 +295,32 @@ async def central_dashboard(
         f"<td>{escape(item['created_at'])}</td></tr>"
         for item in ai_knowledge
     ) or "<tr><td colspan='4'>Nenhuma orientação cadastrada.</td></tr>"
+    def draft_origin(item: dict) -> str:
+        if item["engine"] == "ai":
+            return f"IA · {escape(item['model_used'] or '')}"
+        return escape(item["source_title"] or "Base local — escalar para atendente")
+
+    def draft_rating_control(item: dict) -> str:
+        if item["status"] == "pending":
+            return "<span class='alert'>Revisão humana obrigatória</span>"
+        if item.get("quality_rating"):
+            return f"{'★' * item['quality_rating']}{'☆' * (5 - item['quality_rating'])}"
+        return (
+            "<form method='post' action=\"/central/ai/drafts/"
+            f"{item['id']}/avaliar\" class='ai-review-form'>"
+            "<select name='quality_rating' required>"
+            "<option value=''>Avaliar…</option>"
+            "<option value='5'>5 — Excelente</option><option value='4'>4 — Boa</option>"
+            "<option value='3'>3 — Regular</option><option value='2'>2 — Fraca</option>"
+            "<option value='1'>1 — Ruim</option></select>"
+            "<button type='submit' class='secondary'>OK</button></form>"
+        )
+
     ai_draft_rows = "".join(
         f"<tr><td>{escape(item['question'])}</td><td>{escape(item['answer'])}</td>"
-        f"<td>{escape(item['source_title'] or 'Escalar para atendente')}</td>"
+        f"<td>{draft_origin(item)}</td>"
         f"<td>{escape(confidence_labels.get(item['confidence'], item['confidence']))}</td>"
-        "<td><span class='alert'>Revisão humana obrigatória</span></td></tr>"
+        f"<td>{draft_rating_control(item)}</td></tr>"
         for item in ai_drafts
     ) or "<tr><td colspan='5'>Nenhum rascunho preparado.</td></tr>"
     network_rows = "".join(
@@ -762,8 +797,19 @@ async def central_dashboard(
       </section>
       <section class="module-panel" data-module="ai-support">
         <h2>Assistente IA de atendimento</h2>
-        <p class="simulation"><b>MODO ASSISTIDO:</b> prepara rascunhos usando somente a base deste provedor. Nenhuma mensagem ou ação é executada automaticamente.</p>
-        <h3>Base de conhecimento</h3>
+        <p class="simulation"><b>MODO ASSISTIDO:</b> nenhuma mensagem ou ação é executada automaticamente — toda resposta passa por aprovação humana.</p>
+        <h3>IA real deste provedor</h3>
+        <p>{ai_config_status}</p>
+        <p>Uso este mês: <b>{ai_usage['requests_used']}</b> de <b>{ai_config.monthly_request_limit}</b> chamados ({ai_usage['input_tokens']} tokens de entrada, {ai_usage['output_tokens']} de saída).</p>
+        <form class="create-order" method="post" action="/central/ai/config">
+          <label><input type="checkbox" name="enabled" value="1" {'checked' if ai_config.enabled else ''}> Ativar IA real para este provedor</label>
+          <label>Modelo<select name="model">{ai_model_options}</select></label>
+          <label>Chave de API (Anthropic)<input type="password" name="api_key" placeholder="{'Deixe em branco para manter a chave atual' if ai_config.api_key else 'sk-ant-...'}"></label>
+          <label>Limite de chamados por mês<input type="number" name="monthly_request_limit" min="0" max="100000" value="{ai_config.monthly_request_limit}" required></label>
+          <label>Instruções específicas deste provedor<textarea name="custom_instructions" maxlength="2000" placeholder="Ex.: nunca prometa prazo de visita técnica; sempre cite o WhatsApp de suporte.">{escape(ai_config.custom_instructions)}</textarea></label>
+          <button type="submit">SALVAR CONFIGURAÇÃO DE IA</button>
+        </form>
+        <h3>Base de conhecimento (usada como reforço e como reserva)</h3>
         <form class="create-order" method="post" action="/central/ai/knowledge">
           <label>Título<input name="title" minlength="3" maxlength="100" required placeholder="Ex.: Reiniciar roteador"></label>
           <label>Orientação<input name="content" minlength="10" maxlength="1000" required placeholder="Resposta aprovada pela equipe"></label>
@@ -777,7 +823,7 @@ async def central_dashboard(
           <button type="submit">PREPARAR RASCUNHO</button>
         </form>
         <h3>Rascunhos recentes</h3>
-        <table><thead><tr><th>Pergunta</th><th>Sugestão</th><th>Fonte</th><th>Confiança</th><th>Controle</th></tr></thead><tbody>{ai_draft_rows}</tbody></table>
+        <table><thead><tr><th>Pergunta</th><th>Sugestão</th><th>Origem</th><th>Confiança</th><th>Avaliação</th></tr></thead><tbody>{ai_draft_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="whatsapp">
         <h2>WhatsApp simulado</h2>
@@ -1755,6 +1801,68 @@ async def central_update_branding(
         support_phone,
     )
     return RedirectResponse("/central#branding", status_code=303)
+
+
+@router.post("/central/ai/config", include_in_schema=False)
+async def central_save_ai_config(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    enabled = fields.get("enabled", ["0"])[0] == "1"
+    model = fields.get("model", [""])[0].strip()
+    api_key = fields.get("api_key", [""])[0].strip()
+    custom_instructions = fields.get("custom_instructions", [""])[0].strip()
+    try:
+        monthly_request_limit = int(fields.get("monthly_request_limit", ["0"])[0])
+    except ValueError as error:
+        raise HTTPException(422, "invalid_monthly_limit") from error
+    try:
+        ai_provider_store.save(
+            organization_id,
+            enabled=enabled,
+            model=model,
+            custom_instructions=custom_instructions,
+            monthly_request_limit=monthly_request_limit,
+            api_key=api_key or None,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "ai_config_updated",
+        "ai_config",
+        {
+            "enabled": enabled,
+            "model": model,
+            "monthly_request_limit": monthly_request_limit,
+            "api_key_changed": bool(api_key),
+        },
+    )
+    return RedirectResponse("/central#ai-support", status_code=303)
+
+
+@router.post("/central/ai/drafts/{draft_id}/avaliar", include_in_schema=False)
+async def central_rate_ai_draft(
+    draft_id: str,
+    request: Request,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    try:
+        quality_rating = int(fields.get("quality_rating", [""])[0])
+    except ValueError as error:
+        raise HTTPException(422, "invalid_quality_rating") from error
+    try:
+        ai_support_store.rate_draft(organization_id, draft_id, quality_rating)
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, str(error)) from error
+    return RedirectResponse("/central#ai-support", status_code=303)
 
 
 @router.post("/central/ai/knowledge", include_in_schema=False)

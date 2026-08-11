@@ -85,6 +85,9 @@ class AiSupportStore:
             "reviewed_by_name": "TEXT",
             "reviewed_at": "TEXT",
             "forwarded_to": "TEXT",
+            "engine": "TEXT NOT NULL DEFAULT 'local'",
+            "model_used": "TEXT",
+            "quality_rating": "INTEGER",
         }
         for column, definition in draft_migrations.items():
             if column not in draft_columns:
@@ -145,6 +148,9 @@ class AiSupportStore:
         question: str,
         support_request_id: str | None = None,
     ) -> dict:
+        """Rascunho gerado pela correspondência local com a base de conhecimento
+        do provedor. É o motor padrão e também o fallback quando a IA real
+        não está configurada, estourou o limite mensal, ou está indisponível."""
         question_tokens = self._tokens(question)
         ranked = []
         for item in self.list_knowledge(organization_id):
@@ -165,13 +171,62 @@ class AiSupportStore:
             source_title = source["title"]
             category = source["category"]
             confidence = "high" if score >= 2 else "medium"
+        return self._insert_draft(
+            organization_id=organization_id,
+            question=question,
+            answer=answer,
+            source_title=source_title,
+            category=category,
+            confidence=confidence,
+            support_request_id=support_request_id,
+            engine="local",
+            model_used=None,
+        )
+
+    def create_ai_draft(
+        self,
+        organization_id: str,
+        question: str,
+        answer: str,
+        model: str,
+        category: str = "outro",
+        confidence: str = "medium",
+        support_request_id: str | None = None,
+    ) -> dict:
+        """Rascunho gerado por um modelo de IA real. Continua exigindo revisão
+        humana como qualquer outro rascunho — a diferença é só a origem."""
+        return self._insert_draft(
+            organization_id=organization_id,
+            question=question,
+            answer=answer,
+            source_title=f"IA ({model})",
+            category=category,
+            confidence=confidence,
+            support_request_id=support_request_id,
+            engine="ai",
+            model_used=model,
+        )
+
+    def _insert_draft(
+        self,
+        organization_id: str,
+        question: str,
+        answer: str,
+        source_title: str | None,
+        category: str,
+        confidence: str,
+        support_request_id: str | None,
+        engine: str,
+        model_used: str | None,
+    ) -> dict:
         draft_id = f"ai-draft-{uuid4()}"
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO ai_support_drafts (
                     id, organization_id, question, answer, source_title,
-                    confidence, requires_human_review, support_request_id, category
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                    confidence, requires_human_review, support_request_id,
+                    category, engine, model_used
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
                 (
                     draft_id,
                     organization_id,
@@ -181,8 +236,28 @@ class AiSupportStore:
                     confidence,
                     support_request_id,
                     category,
+                    engine,
+                    model_used,
                 ),
             )
+        return self.get_draft(organization_id, draft_id)
+
+    def rate_draft(
+        self, organization_id: str, draft_id: str, quality_rating: int
+    ) -> dict:
+        if quality_rating not in (1, 2, 3, 4, 5):
+            raise ValueError("invalid_quality_rating")
+        draft = self.get_draft(organization_id, draft_id)
+        if draft["status"] == "pending":
+            raise ValueError("draft_not_reviewed_yet")
+        with self._connect() as connection:
+            updated = connection.execute(
+                """UPDATE ai_support_drafts SET quality_rating = ?
+                WHERE organization_id = ? AND id = ?""",
+                (quality_rating, organization_id, draft_id),
+            )
+        if updated.rowcount != 1:
+            raise KeyError("ai_draft_not_found")
         return self.get_draft(organization_id, draft_id)
 
     def get_draft(self, organization_id: str, draft_id: str) -> dict:
