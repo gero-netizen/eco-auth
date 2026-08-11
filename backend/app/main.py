@@ -11,6 +11,7 @@ from app.api.routes import (
     evidence,
     feasibility,
     financial,
+    financial_webhook,
     health,
     integrations,
     inventory,
@@ -73,3 +74,4 @@ app.include_router(platform.router)
 app.include_router(client_portal.router)
 app.include_router(support.router)
 app.include_router(whatsapp_webhook.router)
+app.include_router(financial_webhook.router)

@@ -1,5 +1,6 @@
 from html import escape
 from urllib.parse import parse_qs
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -13,6 +14,8 @@ from app.api.routes.financial import (
 )
 from app.core.organization_store import organization_store
 from app.core.integration_config_store import get_integration_settings
+from app.core.financial_payment_store import financial_payment_store
+from app.core.mercado_pago_config_store import mercado_pago_config_store
 from app.core.portal_customer_store import portal_customer_store
 from app.core.portal_invite_store import portal_invite_store
 from app.core.portal_session import (
@@ -24,6 +27,10 @@ from app.api.routes.support import list_support_requests, save_rating
 from app.api.routes.network import list_active_alerts
 from app.integrations.mkauth.client import simulated_mkauth_gateway
 from app.integrations.mkauth.api_client import MkAuthApiClient
+from app.integrations.mercado_pago.client import (
+    MercadoPagoUnavailableError,
+    mercado_pago_client,
+)
 
 router = APIRouter(tags=["simulated-client-portal"])
 _customer_id = "sim-customer-1"
@@ -216,7 +223,9 @@ def _work_order_label(value: str) -> str:
     }.get(value, "Aguardando atualização")
 
 
-async def _mkauth_titles_panel(organization_id: str, customer: dict) -> str:
+async def _mkauth_titles_panel(
+    organization_id: str, customer: dict, portal_path: str
+) -> str:
     login = str(customer.get("external_login") or "").strip()
     customer_uuid = str(customer.get("external_customer_id") or "").strip()
     if not login or not customer_uuid:
@@ -261,21 +270,29 @@ async def _mkauth_titles_panel(organization_id: str, customer: dict) -> str:
             str(item.get("datavenc") or item.get("vencimento") or "9999-12-31"),
         )
     )
+    mp_config = mercado_pago_config_store.get(organization_id)
+    pix_available = mp_config.enabled and bool(mp_config.access_token)
     rows = "".join(
         "<tr>"
         f"<td>{escape(str(item.get('titulo') or item.get('numero') or '-'))}</td>"
         f"<td>R$ {escape(str(item.get('valor') or '0,00'))}</td>"
         f"<td>{escape(str(item.get('datavenc') or item.get('vencimento') or '-'))}</td>"
         f"<td>{escape(_label(str(item.get('status') or '-').strip().casefold()))}</td>"
-        "</tr>"
+        "<td>"
+        + (
+            f"<form method='post' action='{portal_path}/financeiro/{escape(str(item.get('uuid') or ''))}/pix'>"
+            "<button type='submit'>PAGAR COM PIX</button></form>"
+            if pix_available and item.get("uuid") else "-"
+        )
+        + "</td></tr>"
         for item in safe_titles
-    ) or "<tr><td colspan='4'>Nenhum título vencido ou a vencer.</td></tr>"
+    ) or "<tr><td colspan='5'>Nenhum título vencido ou a vencer.</td></tr>"
     return (
         "<section><h2>Meus títulos</h2>"
         f"<p>Cadastro vinculado: <b>{escape(login)}</b></p>"
         "<p><small>Consulta real e somente leitura no MK-AUTH.</small></p>"
         "<table><thead><tr><th>Título</th><th>Valor</th><th>Vencimento</th>"
-        f"<th>Situação</th></tr></thead><tbody>{rows}</tbody></table></section>"
+        f"<th>Situação</th><th>Ação</th></tr></thead><tbody>{rows}</tbody></table></section>"
     )
 
 
@@ -289,7 +306,7 @@ async def client_portal(
     organization_id = organization["id"]
     primary_color = _primary_color(organization)
     support_contact = _support_contact(organization)
-    mkauth_titles_panel = await _mkauth_titles_panel(organization_id, customer)
+    mkauth_titles_panel = await _mkauth_titles_panel(organization_id, customer, portal_path)
     account = ensure_simulated_account(
         organization_id,
         organization["name"],
@@ -483,6 +500,189 @@ async def rate_client_support(
     save_rating(request_id, rating, comment, organization_id)
     return RedirectResponse(
         f"{portal_path}/chamados/{request_id}", status_code=303
+    )
+
+
+@router.post("/cliente/financeiro/{title_uuid}/pix")
+@router.post("/portal/{organization_slug}/financeiro/{title_uuid}/pix")
+async def portal_create_pix_charge(
+    title_uuid: str,
+    request: Request,
+    organization_slug: str | None = None,
+) -> RedirectResponse:
+    organization, portal_path = _portal_organization(organization_slug)
+    customer = _authenticated_customer(request, organization, organization_slug)
+    organization_id = organization["id"]
+    login = str(customer.get("external_login") or "").strip()
+    if not login:
+        raise HTTPException(404, "customer_not_linked")
+
+    mp_config = mercado_pago_config_store.get(organization_id)
+    if not mp_config.enabled or not mp_config.access_token:
+        raise HTTPException(404, "pix_not_available")
+
+    settings = get_integration_settings(organization_id)
+    if settings.mkauth_mode != "real":
+        raise HTTPException(404, "mkauth_not_available")
+    client = MkAuthApiClient(
+        settings.mkauth_base_url,
+        settings.mkauth_client_id,
+        settings.mkauth_client_secret,
+        settings.mkauth_verify_ssl,
+        settings.mkauth_allow_http and settings.app_env == "development",
+    )
+    try:
+        title = await client.get_title(title_uuid)
+    except (ValueError, httpx.HTTPError) as error:
+        raise HTTPException(502, "mkauth_unavailable") from error
+    if str(title.get("login") or "").casefold() != login.casefold():
+        raise HTTPException(404, "title_not_found")
+    paid_statuses = {"pago", "liquidado", "recebido", "baixado"}
+    if str(title.get("status") or "").strip().casefold() in paid_statuses:
+        raise HTTPException(409, "title_already_paid")
+    amount_text = str(title.get("valor") or "").replace(",", ".").strip()
+    try:
+        amount = float(amount_text)
+    except ValueError as error:
+        raise HTTPException(422, "title_amount_invalid") from error
+
+    external_reference = f"{organization_id}:{title_uuid}:{uuid4()}"
+    base_url = str(request.base_url).rstrip("/")
+    try:
+        charge = mercado_pago_client.create_pix_charge(
+            access_token=mp_config.access_token,
+            amount=amount,
+            description=f"Fatura {title.get('titulo') or title_uuid} — {organization['name']}",
+            external_reference=external_reference,
+            payer_email=f"{login}@cliente.invalido",
+            notification_url=f"{base_url}/api/v1/financial/webhook/{organization['slug']}",
+            idempotency_key=external_reference,
+        )
+    except MercadoPagoUnavailableError as error:
+        raise HTTPException(502, str(error)) from error
+
+    payment_record = financial_payment_store.create(
+        organization_id,
+        title_uuid,
+        login,
+        f"{amount:.2f}",
+        external_reference,
+        mp_payment_id=charge.payment_id,
+    )
+    return RedirectResponse(
+        f"{portal_path}/financeiro/pix/{payment_record['id']}", status_code=303
+    )
+
+
+@router.get("/cliente/financeiro/pix/{payment_id}", response_class=HTMLResponse)
+@router.get(
+    "/portal/{organization_slug}/financeiro/pix/{payment_id}",
+    response_class=HTMLResponse,
+)
+async def portal_show_pix_charge(
+    payment_id: str,
+    request: Request,
+    organization_slug: str | None = None,
+) -> str:
+    organization, portal_path = _portal_organization(organization_slug)
+    _authenticated_customer(request, organization, organization_slug)
+    organization_id = organization["id"]
+    try:
+        payment_record = financial_payment_store.get(organization_id, payment_id)
+    except KeyError as error:
+        raise HTTPException(404, "payment_not_found") from error
+
+    mp_config = mercado_pago_config_store.get(organization_id)
+    qr_html = "<p>Não foi possível carregar o QR Code agora.</p>"
+    if payment_record["status"] == "confirmed":
+        status_html = "<p class='paid'><b>Pagamento confirmado! Seu título já foi baixado.</b></p>"
+    elif mp_config.access_token and payment_record.get("mp_payment_id"):
+        try:
+            remote = mercado_pago_client.get_payment(
+                mp_config.access_token, payment_record["mp_payment_id"]
+            )
+            transaction_data = remote.get("point_of_interaction", {}).get(
+                "transaction_data", {}
+            )
+            qr_base64 = transaction_data.get("qr_code_base64", "")
+            qr_code = transaction_data.get("qr_code", "")
+            qr_html = (
+                f"<img src='data:image/png;base64,{qr_base64}' alt='QR Code Pix' style='max-width:280px'>"
+                f"<p>Ou copie o código Pix:</p><textarea readonly style='width:100%;height:80px'>{escape(qr_code)}</textarea>"
+                if qr_base64 else qr_html
+            )
+        except MercadoPagoUnavailableError:
+            pass
+        status_html = (
+            "<p>Aguardando confirmação do pagamento.</p>"
+            f"<form method='post' action='{portal_path}/financeiro/pix/{payment_id}/verificar'>"
+            "<button type='submit'>JÁ PAGUEI, VERIFICAR AGORA</button></form>"
+        )
+    else:
+        status_html = "<p>Pagamento indisponível no momento.</p>"
+
+    return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Pagamento Pix</title>
+<style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif}}header{{background:#075e54;color:white;padding:24px 5vw}}main{{width:min(500px,92vw);margin:24px auto;text-align:center}}section{{background:white;border-radius:14px;padding:24px;box-shadow:0 2px 10px #17332f18}}a{{color:#075e54}}button{{border:0;border-radius:8px;padding:11px 16px;background:#075e54;color:white;font-weight:bold;cursor:pointer;margin-top:12px}}.paid{{color:#0b7a4b}}</style></head>
+<body><header><h1>Pagamento via Pix</h1></header><main>
+<p><a href="{portal_path}">← Voltar ao portal</a></p>
+<section><p>Valor: <b>R$ {escape(payment_record['amount'])}</b></p>{qr_html}{status_html}</section>
+</main></body></html>"""
+
+
+@router.post("/cliente/financeiro/pix/{payment_id}/verificar")
+@router.post("/portal/{organization_slug}/financeiro/pix/{payment_id}/verificar")
+async def portal_verify_pix_charge(
+    payment_id: str,
+    request: Request,
+    organization_slug: str | None = None,
+) -> RedirectResponse:
+    organization, portal_path = _portal_organization(organization_slug)
+    _authenticated_customer(request, organization, organization_slug)
+    organization_id = organization["id"]
+    try:
+        payment_record = financial_payment_store.get(organization_id, payment_id)
+    except KeyError as error:
+        raise HTTPException(404, "payment_not_found") from error
+
+    if payment_record["status"] != "confirmed" and payment_record.get("mp_payment_id"):
+        mp_config = mercado_pago_config_store.get(organization_id)
+        settings = get_integration_settings(organization_id)
+        if mp_config.access_token and settings.mkauth_mode == "real" and settings.mkauth_writes_enabled:
+            try:
+                remote = mercado_pago_client.get_payment(
+                    mp_config.access_token, payment_record["mp_payment_id"]
+                )
+            except MercadoPagoUnavailableError:
+                remote = {}
+            if (
+                remote.get("status") == "approved"
+                and str(remote.get("external_reference"))
+                == payment_record["external_reference"]
+            ):
+                from app.api.routes.integrations import confirm_title_payment
+
+                client = MkAuthApiClient(
+                    settings.mkauth_base_url,
+                    settings.mkauth_client_id,
+                    settings.mkauth_client_secret,
+                    settings.mkauth_verify_ssl,
+                    settings.mkauth_allow_http and settings.app_env == "development",
+                )
+                result = await confirm_title_payment(
+                    organization_id,
+                    settings,
+                    client,
+                    payment_record["title_uuid"],
+                    payment_record["login"],
+                    audit_action="title_payment_confirmed_manual_check",
+                )
+                if result["status"] == "paid":
+                    financial_payment_store.mark_confirmed(
+                        organization_id, payment_id, payment_record["mp_payment_id"]
+                    )
+    return RedirectResponse(
+        f"{portal_path}/financeiro/pix/{payment_id}", status_code=303
     )
 
 

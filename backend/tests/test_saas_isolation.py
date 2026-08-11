@@ -548,6 +548,7 @@ def test_portal_financial_panel_only_renders_linked_login(monkeypatch) -> None:
                 "external_customer_id": "mk-customer-1",
                 "external_login": "pppoe-maria",
             },
+            "/cliente",
         )
     )
     assert "1001" in panel

@@ -619,7 +619,13 @@ def test_real_pix_payment_requires_confirmation_and_verifies_mkauth(monkeypatch)
         confirmation_text="BAIXAR",
         confirmed=True,
     )
-    response = asyncio.run(integrations.create_mkauth_pix_payment(request))
+    fake_session = {
+        "organization": {"id": "g7-networks"},
+        "user": {"id": "admin-1", "name": "Admin", "username": "admin", "role": "owner"},
+    }
+    response = asyncio.run(
+        integrations.create_mkauth_pix_payment(request, session=fake_session)
+    )
 
     assert response["status"] == "paid"
     assert response["write_performed"] is True

@@ -41,6 +41,8 @@ from app.core.whatsapp_config_store import whatsapp_config_store
 from app.core.whatsapp_consent_store import whatsapp_consent_store
 from app.core.whatsapp_message_store import whatsapp_message_store
 from app.core.whatsapp_orchestrator import send_whatsapp_message
+from app.core.mercado_pago_config_store import mercado_pago_config_store
+from app.core.financial_payment_store import financial_payment_store
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -202,6 +204,29 @@ async def central_dashboard(
         f"<button type='submit'>Simular Pix</button></form></td></tr>"
         for account in financial_accounts
     )
+    mercado_pago_config = mercado_pago_config_store.get(organization_id)
+    if not mercado_pago_config.access_token:
+        mercado_pago_status = "Pix real ainda não configurado — pagamentos continuam apenas conferidos manualmente."
+    elif not mercado_pago_config.enabled:
+        mercado_pago_status = "Configurado, mas desativado — clientes não veem a opção de pagar com Pix real no portal."
+    else:
+        mercado_pago_status = "Pix real ativo — clientes podem gerar cobrança Pix no portal, com confirmação automática pelo webhook."
+    financial_payment_status_labels = {
+        "pending": "Aguardando pagamento",
+        "confirmed": "Confirmado e baixado",
+        "rejected": "Rejeitado",
+        "expired": "Expirado",
+        "error": "Divergência — verificar",
+    }
+    financial_payment_rows = "".join(
+        f"<tr><td>{escape(item['title_uuid'])}</td><td>{escape(item['login'])}</td>"
+        f"<td>R$ {escape(item['amount'])}</td>"
+        f"<td>{escape(financial_payment_status_labels.get(item['status'], item['status']))}"
+        + (f" ({escape(item['error_reason'])})" if item.get("error_reason") else "")
+        + f"</td><td>{escape(item['created_at'])}</td>"
+        f"<td>{escape(item['confirmed_at'] or '-')}</td></tr>"
+        for item in financial_payment_store.list_recent(organization_id, limit=30)
+    ) or "<tr><td colspan='6'>Nenhuma cobrança Pix real gerada ainda.</td></tr>"
     status_labels = {
         "sent": "Enviado (real)",
         "failed": "Falhou",
@@ -883,6 +908,17 @@ async def central_dashboard(
         <p>Nenhuma baixa real é enviada ao MK-AUTH nesta etapa.</p>
         <button type="button" id="load-pix-simulations">ATUALIZAR SIMULAÇÕES</button>
         <table><thead><tr><th>Título</th><th>Login</th><th>Valor</th><th>Data UTC</th><th>Status</th></tr></thead><tbody id="pix-simulations-body"><tr><td colspan="5">Consulta ainda não realizada.</td></tr></tbody></table>
+        <h3>Pix real (Mercado Pago)</h3>
+        <p>{mercado_pago_status}</p>
+        <form class="create-order" method="post" action="/central/financeiro/mercadopago/config">
+          <label><input type="checkbox" name="enabled" value="1" {'checked' if mercado_pago_config.enabled else ''}> Ativar cobrança Pix real para este provedor</label>
+          <label>Token de acesso<input type="password" name="access_token" placeholder="{'Deixe em branco para manter o token atual' if mercado_pago_config.access_token else 'APP_USR-...'}"></label>
+          <label>Segredo do webhook (assinatura)<input type="password" name="webhook_secret" placeholder="{'Deixe em branco para manter o segredo atual' if mercado_pago_config.webhook_secret else 'Segredo de assinatura do webhook'}"></label>
+          <button type="submit">SALVAR CONFIGURAÇÃO DO MERCADO PAGO</button>
+        </form>
+        <p><b>URL do webhook a cadastrar no Mercado Pago:</b> <code>/api/v1/financial/webhook/{escape(session['organization']['slug'])}</code> (complete com o seu domínio na frente)</p>
+        <h3>Conciliação de pagamentos Pix</h3>
+        <table><thead><tr><th>Título</th><th>Login</th><th>Valor</th><th>Status</th><th>Criado UTC</th><th>Confirmado UTC</th></tr></thead><tbody>{financial_payment_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="support">
         <h2>Chamados do portal do cliente</h2>
@@ -2001,6 +2037,36 @@ async def central_rate_ai_draft(
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error)) from error
     return RedirectResponse("/central#ai-support", status_code=303)
+
+
+@router.post("/central/financeiro/mercadopago/config", include_in_schema=False)
+async def central_save_mercado_pago_config(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    enabled = fields.get("enabled", ["0"])[0] == "1"
+    access_token = fields.get("access_token", [""])[0].strip()
+    webhook_secret = fields.get("webhook_secret", [""])[0].strip()
+    mercado_pago_config_store.save(
+        organization_id,
+        enabled=enabled,
+        access_token=access_token or None,
+        webhook_secret=webhook_secret or None,
+    )
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "mercado_pago_config_updated",
+        "mercado_pago_config",
+        {
+            "enabled": enabled,
+            "access_token_changed": bool(access_token),
+            "webhook_secret_changed": bool(webhook_secret),
+        },
+    )
+    return RedirectResponse("/central#financial", status_code=303)
 
 
 @router.post("/central/whatsapp/config", include_in_schema=False)

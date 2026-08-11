@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from app.api.routes.central_auth import require_central_access, require_central_roles
+from app.core.audit_store import audit_store
 from app.core.config import get_settings
 from app.core.pix_simulation_store import PixSimulationStore
 from app.core.trust_unlock_store import TrustUnlockStore
@@ -110,69 +111,67 @@ async def list_mkauth_pix_simulations() -> dict:
     return {"status": "ok", "count": len(records), "records": records}
 
 
-@router.post("/mkauth/pix-payments")
-async def create_mkauth_pix_payment(
-    request: PixRealPaymentRequest,
-    _session: dict = Depends(require_central_roles("owner", "admin")),
+async def confirm_title_payment(
+    organization_id: str,
+    settings,
+    client: MkAuthApiClient,
+    title_uuid: str,
+    login: str,
+    audit_user: dict | None = None,
+    audit_action: str = "title_payment_confirmed",
 ) -> dict:
-    settings = _tenant_integration_settings()
-    if not request.confirmed or request.confirmation_text.strip().upper() != "BAIXAR":
-        return {"status": "confirmation_required"}
-    if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
-        return {"status": "writes_disabled"}
+    """Confirma a baixa de um título específico no MK-AUTH, resolve
+    desbloqueio de confiança se não restarem pendências, notifica o cliente
+    e registra na auditoria financeira. Usado tanto pelo fluxo manual do
+    atendente quanto pela confirmação automática via webhook do Mercado
+    Pago — mesma lógica, testada uma vez só."""
     store = _pix_simulation_store()
-    if store.has_real_payment(request.title_uuid):
+    if store.has_real_payment(title_uuid):
         return {"status": "duplicate_blocked"}
-    try:
-        client = MkAuthApiClient(
-            settings.mkauth_base_url,
-            settings.mkauth_client_id,
-            settings.mkauth_client_secret,
-            settings.mkauth_verify_ssl,
-            settings.mkauth_allow_http and settings.app_env == "development",
-        )
-        title = await client.get_title(request.title_uuid)
-        if str(title.get("login") or "").casefold() != request.login.casefold():
-            return {"status": "title_owner_mismatch"}
-        paid_statuses = {"pago", "liquidado", "recebido", "baixado"}
-        if str(title.get("status") or "").strip().casefold() in paid_statuses or title.get("datapag"):
-            return {"status": "title_already_paid"}
-        amount = str(title.get("valor") or "").strip()
-        if not amount:
-            return {"status": "title_amount_missing"}
-        await client.receive_title(request.title_uuid, amount, "API", "pix")
-        updated = await client.get_title(request.title_uuid)
-        updated_status = str(updated.get("status") or "").strip().casefold()
-        if updated_status not in paid_statuses and not updated.get("datapag"):
-            return {"status": "error", "reason": "mkauth_payment_not_confirmed"}
-        record = store.create(
-            request.title_uuid,
-            str(title.get("titulo") or title.get("numero") or title.get("id") or "-"),
-            request.login,
-            amount,
-            status="real_paid",
-        )
-        remaining_titles = await client.list_payable_titles(request.login)
-        access_resolution = "pending_titles_remain"
-        if not remaining_titles:
-            client_details = await client.get_client_details(request.login)
-            observation = str(client_details.get("observacao") or "").strip().casefold()
-            if observation in {"s", "sim", "1", "true", "ativo"}:
-                client_uuid = str(client_details.get("uuid") or "").strip()
-                if client_uuid:
-                    await client.set_client_trust_observation(client_uuid, False)
-            active_unlock = _trust_unlock_store().get_active_by_login(request.login)
-            if active_unlock:
-                _trust_unlock_store().mark_paid(active_unlock["id"])
-            access_resolution = "no_pending_titles"
-        notification = record_simulated_payment_message(
-            request.login,
-            str(title.get("titulo") or title.get("numero") or title.get("id") or "-"),
-            amount,
-            len(remaining_titles),
-        )
-    except (ValueError, httpx.HTTPError) as error:
-        return {"status": "error", "reason": str(error) or "mkauth_pix_payment_failed"}
+    title = await client.get_title(title_uuid)
+    if str(title.get("login") or "").casefold() != login.casefold():
+        return {"status": "title_owner_mismatch"}
+    paid_statuses = {"pago", "liquidado", "recebido", "baixado"}
+    if str(title.get("status") or "").strip().casefold() in paid_statuses or title.get("datapag"):
+        return {"status": "title_already_paid"}
+    amount = str(title.get("valor") or "").strip()
+    if not amount:
+        return {"status": "title_amount_missing"}
+    await client.receive_title(title_uuid, amount, "API", "pix")
+    updated = await client.get_title(title_uuid)
+    updated_status = str(updated.get("status") or "").strip().casefold()
+    if updated_status not in paid_statuses and not updated.get("datapag"):
+        return {"status": "error", "reason": "mkauth_payment_not_confirmed"}
+    title_label = str(title.get("titulo") or title.get("numero") or title.get("id") or "-")
+    record = store.create(title_uuid, title_label, login, amount, status="real_paid")
+    remaining_titles = await client.list_payable_titles(login)
+    access_resolution = "pending_titles_remain"
+    if not remaining_titles:
+        client_details = await client.get_client_details(login)
+        observation = str(client_details.get("observacao") or "").strip().casefold()
+        if observation in {"s", "sim", "1", "true", "ativo"}:
+            client_uuid = str(client_details.get("uuid") or "").strip()
+            if client_uuid:
+                await client.set_client_trust_observation(client_uuid, False)
+        active_unlock = _trust_unlock_store().get_active_by_login(login)
+        if active_unlock:
+            _trust_unlock_store().mark_paid(active_unlock["id"])
+        access_resolution = "no_pending_titles"
+    notification = record_simulated_payment_message(
+        login, title_label, amount, len(remaining_titles)
+    )
+    audit_store.record(
+        organization_id,
+        audit_user or {"id": "system", "name": "Confirmação automática", "username": "system", "role": "system"},
+        audit_action,
+        f"titulo:{title_uuid}",
+        {
+            "login": login,
+            "amount": amount,
+            "access_resolution": access_resolution,
+            "remaining_titles": len(remaining_titles),
+        },
+    )
     return {
         "status": "paid",
         "write_performed": True,
@@ -184,6 +183,38 @@ async def create_mkauth_pix_payment(
         },
         "record": record,
     }
+
+
+@router.post("/mkauth/pix-payments")
+async def create_mkauth_pix_payment(
+    request: PixRealPaymentRequest,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> dict:
+    settings = _tenant_integration_settings()
+    if not request.confirmed or request.confirmation_text.strip().upper() != "BAIXAR":
+        return {"status": "confirmation_required"}
+    if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
+        return {"status": "writes_disabled"}
+    organization_id = session["organization"]["id"]
+    try:
+        client = MkAuthApiClient(
+            settings.mkauth_base_url,
+            settings.mkauth_client_id,
+            settings.mkauth_client_secret,
+            settings.mkauth_verify_ssl,
+            settings.mkauth_allow_http and settings.app_env == "development",
+        )
+        return await confirm_title_payment(
+            organization_id,
+            settings,
+            client,
+            request.title_uuid,
+            request.login,
+            audit_user=session["user"],
+            audit_action="title_payment_confirmed_manual",
+        )
+    except (ValueError, httpx.HTTPError) as error:
+        return {"status": "error", "reason": str(error) or "mkauth_pix_payment_failed"}
 
 
 @router.post("/mkauth/trust-unlock")
