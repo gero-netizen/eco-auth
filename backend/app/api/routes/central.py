@@ -18,6 +18,8 @@ from app.api.routes.notifications import record_simulated_portal_invite_message
 from app.api.routes.support import list_support_requests, mark_answered, mark_forwarded
 from app.api.routes.network import list_active_alerts
 from app.core.network_metrics_store import network_metrics_store
+from app.core.cto_store import cto_store
+from app.core.geo import GeocodingError, geocode_address, haversine_meters
 from app.api.routes.central_auth import (
     require_central_access,
     require_central_roles,
@@ -52,6 +54,9 @@ router = APIRouter(
     tags=["central-dashboard"],
     dependencies=[Depends(require_central_access)],
 )
+
+
+_last_viability_result: dict[str, dict] = {}
 
 
 @router.get("/central", response_class=HTMLResponse)
@@ -96,6 +101,22 @@ async def central_dashboard(
     ai_config = ai_provider_store.get(organization_id)
     ai_usage = ai_usage_store.get_usage(organization_id)
     network_alerts = list_active_alerts(organization_id)
+    ctos = cto_store.list_active(organization_id)
+    pending_viability = _last_viability_result.pop(organization_id, None)
+    if pending_viability is None:
+        viability_result_html = ""
+    else:
+        status_labels = {
+            "disponivel": "✅ Disponível",
+            "sem_porta": "⚠️ Sem porta disponível",
+            "fora_area": "❌ Fora da área de atendimento",
+            "necessita_analise": "❓ Necessita análise manual",
+        }
+        viability_result_html = (
+            "<div class='ai-panel'><p><b>"
+            f"{escape(status_labels.get(pending_viability['status'], pending_viability['status']))}"
+            f"</b></p><p>{escape(pending_viability['message'])}</p></div>"
+        )
     technicians = technician_store.list_all(organization_id)
     integration_config_store.ensure_unconfigured(organization_id)
     mkauth_settings = get_integration_settings(organization_id)
@@ -441,6 +462,16 @@ async def central_dashboard(
         f"<td>{draft_rating_control(item)}</td></tr>"
         for item in ai_drafts
     ) or "<tr><td colspan='5'>Nenhum rascunho preparado.</td></tr>"
+    cto_rows = "".join(
+        f"<tr><td>{escape(cto['code'])}</td>"
+        f"<td>{cto['latitude']:.6f}, {cto['longitude']:.6f}</td>"
+        f"<td>{cto['occupied_ports']}/{cto['total_ports']} ocupadas ({cto['available_ports']} livres)</td>"
+        f"<td>{escape(cto['splitter_ratio'])}</td>"
+        f"<td>{escape(cto['pop_reference'] or '-')}</td>"
+        f"<td><form method='post' action='/central/ftth/ctos/{escape(cto['id'])}/desativar'>"
+        "<button class='secondary' type='submit'>DESATIVAR</button></form></td></tr>"
+        for cto in ctos
+    ) or "<tr><td colspan='6'>Nenhuma CTO cadastrada ainda.</td></tr>"
     network_rows = "".join(
         f"<tr><td>{escape(alert.title)}</td><td>{escape(alert.area)}</td>"
         f"<td>{escape(alert.severity)}</td>"
@@ -756,6 +787,7 @@ async def central_dashboard(
         <details class="menu-category"><summary>Configurações</summary><div class="menu-items">
           <button class="menu-button" type="button" data-target="mkauth">Integração MK-AUTH</button>
           <button class="menu-button" type="button" data-target="mikrotik">Integração MikroTik</button>
+          <button class="menu-button" type="button" data-target="ftth">Mapa e viabilidade FTTH</button>
           <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
           <button class="menu-button" type="button" data-target="branding">Identidade do provedor</button>
           <button class="menu-button" type="button" data-target="subscription">Plano e assinatura</button>
@@ -831,6 +863,33 @@ async def central_dashboard(
           <p><small>Esta integração é somente leitura — consulta sessões PPPoE e diagnóstico, nunca altera configuração do roteador. Depois de configurar aqui, veja o diagnóstico ao vivo em "Monitoramento da rede".</small></p>
           <button type="submit">SALVAR CONFIGURAÇÃO DO MIKROTIK</button>
         </form>
+      </section>
+      <section class="module-panel" data-module="ftth">
+        <h2>Mapa e viabilidade FTTH</h2>
+        <p><small>Cadastro real de CTOs — coordenadas, capacidade de portas e ocupação. A checagem de viabilidade usada pelo técnico em campo consulta estes dados.</small></p>
+        <h3>Cadastrar CTO</h3>
+        <form class="create-order" method="post" action="/central/ftth/ctos">
+          <label>Código<input name="code" minlength="1" maxlength="50" required placeholder="Ex.: CTO-CENTRO-01"></label>
+          <label>Latitude<input type="number" step="0.000001" name="latitude" min="-90" max="90" required placeholder="-12.266"></label>
+          <label>Longitude<input type="number" step="0.000001" name="longitude" min="-180" max="180" required placeholder="-38.966"></label>
+          <label>Total de portas<input type="number" name="total_ports" min="1" max="144" value="8" required></label>
+          <label>Proporção do splitter<select name="splitter_ratio">
+            <option value="1:8">1:8</option><option value="1:16">1:16</option><option value="1:32">1:32</option>
+          </select></label>
+          <label>Referência do POP<input name="pop_reference" maxlength="100" placeholder="Ex.: POP Centro"></label>
+          <label>Observações<input name="notes" maxlength="300" placeholder="Opcional"></label>
+          <button type="submit">CADASTRAR CTO</button>
+        </form>
+        <h3>CTOs cadastradas</h3>
+        <table><thead><tr><th>Código</th><th>Coordenadas</th><th>Portas</th><th>Splitter</th><th>POP</th><th>Ação</th></tr></thead><tbody>{cto_rows}</tbody></table>
+        <h3>Verificar viabilidade</h3>
+        <form class="create-order" method="post" action="/central/ftth/viabilidade">
+          <label>Endereço<input name="address" maxlength="200" placeholder="Rua, número, bairro, cidade"></label>
+          <label>Ou latitude<input type="number" step="0.000001" name="latitude" min="-90" max="90" placeholder="Opcional se preencher o endereço"></label>
+          <label>Ou longitude<input type="number" step="0.000001" name="longitude" min="-180" max="180" placeholder="Opcional se preencher o endereço"></label>
+          <button type="submit">VERIFICAR</button>
+        </form>
+        {viability_result_html}
       </section>
       <section class="module-panel" data-module="mkauth-clients">
         <h2>Clientes MK-AUTH</h2>
@@ -2205,6 +2264,121 @@ async def central_save_mkauth_config(
         },
     )
     return RedirectResponse("/central#mkauth", status_code=303)
+
+
+@router.post("/central/ftth/ctos", include_in_schema=False)
+async def central_create_cto(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    code = fields.get("code", [""])[0].strip()
+    pop_reference = fields.get("pop_reference", [""])[0].strip() or None
+    notes = fields.get("notes", [""])[0].strip() or None
+    splitter_ratio = fields.get("splitter_ratio", ["1:8"])[0]
+    if not code:
+        raise HTTPException(422, "invalid_cto_code")
+    try:
+        latitude = float(fields.get("latitude", [""])[0])
+        longitude = float(fields.get("longitude", [""])[0])
+        total_ports = int(fields.get("total_ports", ["8"])[0])
+    except ValueError as error:
+        raise HTTPException(422, "invalid_cto_data") from error
+    try:
+        cto_store.create(
+            organization_id, code, latitude, longitude, total_ports,
+            splitter_ratio=splitter_ratio, pop_reference=pop_reference, notes=notes,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    audit_store.record(
+        organization_id, session["user"], "cto_created", f"cto_code:{code}",
+        {"latitude": latitude, "longitude": longitude, "total_ports": total_ports},
+    )
+    return RedirectResponse("/central#ftth", status_code=303)
+
+
+@router.post("/central/ftth/ctos/{cto_id}/desativar", include_in_schema=False)
+async def central_deactivate_cto(
+    cto_id: str,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    try:
+        cto_store.deactivate(organization_id, cto_id)
+    except KeyError as error:
+        raise HTTPException(404, "cto_not_found") from error
+    audit_store.record(organization_id, session["user"], "cto_deactivated", cto_id, {})
+    return RedirectResponse("/central#ftth", status_code=303)
+
+
+@router.post("/central/ftth/viabilidade", include_in_schema=False)
+async def central_check_viability(
+    request: Request,
+    session: dict = Depends(require_central_session),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    address = fields.get("address", [""])[0].strip()
+    raw_lat = fields.get("latitude", [""])[0].strip()
+    raw_lng = fields.get("longitude", [""])[0].strip()
+
+    if raw_lat and raw_lng:
+        try:
+            latitude, longitude = float(raw_lat), float(raw_lng)
+        except ValueError:
+            _last_viability_result[organization_id] = {
+                "status": "necessita_analise",
+                "message": "Coordenadas inválidas.",
+            }
+            return RedirectResponse("/central#ftth", status_code=303)
+    elif address:
+        try:
+            latitude, longitude = geocode_address(address)
+        except GeocodingError as error:
+            _last_viability_result[organization_id] = {
+                "status": "necessita_analise",
+                "message": f"Não foi possível localizar o endereço ({error}).",
+            }
+            return RedirectResponse("/central#ftth", status_code=303)
+    else:
+        raise HTTPException(422, "address_or_coordinates_required")
+
+    ctos = cto_store.list_active(organization_id)
+    nearby = sorted(
+        (
+            {
+                "code": cto["code"],
+                "distance": haversine_meters(latitude, longitude, cto["latitude"], cto["longitude"]),
+                "available_ports": cto["available_ports"],
+            }
+            for cto in ctos
+        ),
+        key=lambda item: item["distance"],
+    )
+    within_radius = [item for item in nearby if item["distance"] <= 300]
+    if not nearby:
+        result = {"status": "necessita_analise", "message": "Nenhuma CTO cadastrada ainda."}
+    elif not within_radius:
+        result = {
+            "status": "fora_area",
+            "message": f"CTO mais próxima ({nearby[0]['code']}) está a {round(nearby[0]['distance'])}m, fora do raio de 300m.",
+        }
+    else:
+        with_ports = [item for item in within_radius if item["available_ports"] > 0]
+        if with_ports:
+            result = {
+                "status": "disponivel",
+                "message": f"Disponível na CTO {with_ports[0]['code']}, a {round(with_ports[0]['distance'])}m ({with_ports[0]['available_ports']} porta(s) livre(s)).",
+            }
+        else:
+            result = {
+                "status": "sem_porta",
+                "message": f"CTO mais próxima ({within_radius[0]['code']}) está sem portas livres.",
+            }
+    _last_viability_result[organization_id] = result
+    return RedirectResponse("/central#ftth", status_code=303)
 
 
 @router.post("/central/integracoes/mikrotik/config", include_in_schema=False)

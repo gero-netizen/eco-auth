@@ -253,8 +253,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert response.status_code == 200
     assert "Painel da Central" in response.text
     assert "MODO SIMULADO" in response.text
-    assert response.text.count('class="menu-button') == 24
-    assert response.text.count('data-module=') == 24
+    assert response.text.count('class="menu-button') == 25
+    assert response.text.count('data-module=') == 25
     assert response.text.count('class="menu-category') == 7
     for category in (
         "Operação",
@@ -430,16 +430,48 @@ def test_pppoe_simulator_never_requires_a_password() -> None:
     assert result["assigned_ip"].startswith("10.20.")
 
 
-def test_ftth_feasibility_simulator_returns_cto_capacity() -> None:
+def test_ftth_feasibility_finds_a_real_registered_cto_with_available_ports() -> None:
+    from app.core.cto_store import cto_store
+
+    cto_store.create(
+        "g7-networks", "CTO-TESTE-01", latitude=-12.2500, longitude=-38.9500,
+        total_ports=8, splitter_ratio="1:8",
+    )
     response = client.post(
         "/api/v1/feasibility/check",
-        json={"work_order_id": "sim-os-1", "address": "Ambiente de testes"},
+        json={
+            "work_order_id": "sim-os-1",
+            "latitude": -12.2501,
+            "longitude": -38.9501,
+        },
     )
     assert response.status_code == 200
     result = response.json()
-    assert result["simulated"] is True
-    assert result["available_ports"] > 0
-    assert result["total_ports"] in (8, 16)
+    assert result["simulated"] is False
+    assert result["status"] == "disponivel"
+    assert result["feasible"] is True
+    assert result["nearest_cto"]["code"] == "CTO-TESTE-01"
+
+
+def test_ftth_feasibility_reports_out_of_area_when_too_far() -> None:
+    from app.core.cto_store import cto_store
+
+    cto_store.create(
+        "g7-networks", "CTO-TESTE-02", latitude=-12.2500, longitude=-38.9500,
+        total_ports=8, splitter_ratio="1:8",
+    )
+    response = client.post(
+        "/api/v1/feasibility/check",
+        json={
+            "work_order_id": "sim-os-2",
+            "latitude": -3.7327,  # Fortaleza, bem longe de Feira de Santana
+            "longitude": -38.5267,
+        },
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "fora_area"
+    assert result["feasible"] is False
 
 
 def test_pix_simulator_marks_invoice_paid_and_releases_access() -> None:
