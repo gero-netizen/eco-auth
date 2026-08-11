@@ -253,8 +253,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert response.status_code == 200
     assert "Painel da Central" in response.text
     assert "MODO SIMULADO" in response.text
-    assert response.text.count('class="menu-button') == 23
-    assert response.text.count('data-module=') == 23
+    assert response.text.count('class="menu-button') == 24
+    assert response.text.count('data-module=') == 24
     assert response.text.count('class="menu-category') == 7
     for category in (
         "Operação",

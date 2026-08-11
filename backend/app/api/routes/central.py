@@ -27,6 +27,7 @@ from app.core.audit_store import audit_store
 from app.core.technician_store import technician_store
 from app.core.config import get_settings
 from app.core.integration_config_store import (
+    TenantIntegrationSettings,
     get_integration_settings,
     integration_config_store,
 )
@@ -743,6 +744,7 @@ async def central_dashboard(
         </div></details>
         <details class="menu-category"><summary>Configurações</summary><div class="menu-items">
           <button class="menu-button" type="button" data-target="mkauth">Integração MK-AUTH</button>
+          <button class="menu-button" type="button" data-target="mikrotik">Integração MikroTik</button>
           <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
           <button class="menu-button" type="button" data-target="branding">Identidade do provedor</button>
           <button class="menu-button" type="button" data-target="subscription">Plano e assinatura</button>
@@ -778,8 +780,22 @@ async def central_dashboard(
       <section class="module-panel" data-module="materials"><h2>Histórico de materiais</h2><table><thead><tr><th>Item</th><th>Movimento</th><th>Quantidade</th><th>OS</th><th>Origem</th><th>Data UTC</th></tr></thead><tbody>{movement_rows}</tbody></table></section>
       <section class="module-panel" data-module="mkauth">
         <h2>Integração MK-AUTH</h2>
-        <p><b>Modo:</b> {escape(mkauth_settings.mkauth_mode)}</p>
-        <p><b>Destino:</b> {escape(mkauth_settings.mkauth_base_url)}</p>
+        <p><b>Modo atual:</b> {escape(mkauth_settings.mkauth_mode)} • <b>Destino:</b> {escape(mkauth_settings.mkauth_base_url)}</p>
+        <p><b>Escritas reais:</b> {'ATIVADAS — o sistema pode gravar no MK-AUTH real' if mkauth_settings.mkauth_writes_enabled else 'desativadas — mesmo em modo real, nada é gravado'}</p>
+        <form class="create-order" method="post" action="/central/integracoes/mkauth/config">
+          <label>Modo<select name="mkauth_mode">
+            <option value="simulated" {'selected' if mkauth_settings.mkauth_mode == 'simulated' else ''}>Simulado (bancada)</option>
+            <option value="real" {'selected' if mkauth_settings.mkauth_mode == 'real' else ''}>Real</option>
+          </select></label>
+          <label>URL base do MK-AUTH<input name="mkauth_base_url" value="{escape(mkauth_settings.mkauth_base_url)}" placeholder="https://painel.seuprovedor.com.br"></label>
+          <label>Client ID<input type="password" name="mkauth_client_id" placeholder="{'Deixe em branco para manter o atual' if mkauth_settings.mkauth_client_id else 'Client ID da API do MK-AUTH'}"></label>
+          <label>Client Secret<input type="password" name="mkauth_client_secret" placeholder="{'Deixe em branco para manter o atual' if mkauth_settings.mkauth_client_secret else 'Client Secret da API do MK-AUTH'}"></label>
+          <label><input type="checkbox" name="mkauth_verify_ssl" value="1" {'checked' if mkauth_settings.mkauth_verify_ssl else ''}> Verificar certificado SSL</label>
+          <label><input type="checkbox" name="mkauth_allow_http" value="1" {'checked' if mkauth_settings.mkauth_allow_http else ''}> Permitir HTTP sem criptografia (apenas para testes de bancada)</label>
+          <p class="alert">Ativar "escritas reais" permite que o sistema grave dados de verdade no seu MK-AUTH (baixa de título, desbloqueio, fechamento de chamado). Só ative depois de testar bastante em modo real com escritas desativadas.</p>
+          <label><input type="checkbox" name="mkauth_writes_enabled" value="1" {'checked' if mkauth_settings.mkauth_writes_enabled else ''}> Ativar escritas reais no MK-AUTH</label>
+          <button type="submit">SALVAR CONFIGURAÇÃO DO MK-AUTH</button>
+        </form>
         <p>O diagnóstico é estritamente de leitura e não altera clientes, planos ou cobranças.</p>
         <a class="button-link" href="/api/v1/integrations/mkauth/probe" target="_blank">EXECUTAR DIAGNÓSTICO</a>
         <button type="button" id="load-mkauth-plans">ATUALIZAR PLANOS</button>
@@ -788,6 +804,22 @@ async def central_dashboard(
           <thead><tr><th>Plano</th><th>Valor</th><th>Download</th><th>Upload</th><th>Identificador</th></tr></thead>
           <tbody id="mkauth-plans-body"><tr><td colspan="5">Consulta ainda não realizada.</td></tr></tbody>
         </table>
+      </section>
+      <section class="module-panel" data-module="mikrotik">
+        <h2>Integração MikroTik (RouterOS)</h2>
+        <p><b>Modo atual:</b> {escape(mkauth_settings.routeros_mode)} • <b>Endereço:</b> {escape(mkauth_settings.routeros_host)}:{mkauth_settings.routeros_port}</p>
+        <form class="create-order" method="post" action="/central/integracoes/mikrotik/config">
+          <label>Modo<select name="routeros_mode">
+            <option value="simulated" {'selected' if mkauth_settings.routeros_mode == 'simulated' else ''}>Simulado (bancada)</option>
+            <option value="real" {'selected' if mkauth_settings.routeros_mode == 'real' else ''}>Real</option>
+          </select></label>
+          <label>Endereço IP ou host<input name="routeros_host" value="{escape(mkauth_settings.routeros_host)}" placeholder="192.168.20.1"></label>
+          <label>Porta da API<input type="number" name="routeros_port" min="1" max="65535" value="{mkauth_settings.routeros_port}"></label>
+          <label>Usuário<input type="password" name="routeros_username" placeholder="{'Deixe em branco para manter o atual' if mkauth_settings.routeros_username else 'app_api'}"></label>
+          <label>Senha<input type="password" name="routeros_password" placeholder="{'Deixe em branco para manter a atual' if mkauth_settings.routeros_password else 'Senha do usuário da API'}"></label>
+          <p><small>Esta integração é somente leitura — consulta sessões PPPoE e diagnóstico, nunca altera configuração do roteador. Depois de configurar aqui, veja o diagnóstico ao vivo em "Monitoramento da rede".</small></p>
+          <button type="submit">SALVAR CONFIGURAÇÃO DO MIKROTIK</button>
+        </form>
       </section>
       <section class="module-panel" data-module="mkauth-clients">
         <h2>Clientes MK-AUTH</h2>
@@ -2098,6 +2130,106 @@ async def central_save_trust_unlock_rules(
         },
     )
     return RedirectResponse("/central#financial", status_code=303)
+
+
+@router.post("/central/integracoes/mkauth/config", include_in_schema=False)
+async def central_save_mkauth_config(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    current = get_integration_settings(organization_id)
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    mkauth_mode = fields.get("mkauth_mode", ["simulated"])[0]
+    if mkauth_mode not in ("simulated", "real"):
+        raise HTTPException(422, "invalid_mkauth_mode")
+    base_url = fields.get("mkauth_base_url", [""])[0].strip()
+    if not re.fullmatch(r"https?://[^\s]+", base_url or "http://x"):
+        raise HTTPException(422, "invalid_mkauth_base_url")
+    client_id = fields.get("mkauth_client_id", [""])[0].strip()
+    client_secret = fields.get("mkauth_client_secret", [""])[0].strip()
+    updated = TenantIntegrationSettings(
+        app_env=current.app_env,
+        mkauth_mode=mkauth_mode,
+        mkauth_base_url=base_url or current.mkauth_base_url,
+        mkauth_client_id=client_id or current.mkauth_client_id,
+        mkauth_client_secret=client_secret or current.mkauth_client_secret,
+        mkauth_verify_ssl=fields.get("mkauth_verify_ssl", ["0"])[0] == "1",
+        mkauth_allow_http=fields.get("mkauth_allow_http", ["0"])[0] == "1",
+        mkauth_writes_enabled=fields.get("mkauth_writes_enabled", ["0"])[0] == "1",
+        routeros_mode=current.routeros_mode,
+        routeros_host=current.routeros_host,
+        routeros_port=current.routeros_port,
+        routeros_username=current.routeros_username,
+        routeros_password=current.routeros_password,
+    )
+    integration_config_store.save(organization_id, updated)
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "mkauth_config_updated",
+        "mkauth_config",
+        {
+            "mode": mkauth_mode,
+            "writes_enabled": updated.mkauth_writes_enabled,
+            "base_url": updated.mkauth_base_url,
+            "client_id_changed": bool(client_id),
+            "client_secret_changed": bool(client_secret),
+        },
+    )
+    return RedirectResponse("/central#mkauth", status_code=303)
+
+
+@router.post("/central/integracoes/mikrotik/config", include_in_schema=False)
+async def central_save_mikrotik_config(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    current = get_integration_settings(organization_id)
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    routeros_mode = fields.get("routeros_mode", ["simulated"])[0]
+    if routeros_mode not in ("simulated", "real"):
+        raise HTTPException(422, "invalid_routeros_mode")
+    host = fields.get("routeros_host", [""])[0].strip()
+    try:
+        port = int(fields.get("routeros_port", [str(current.routeros_port)])[0])
+    except ValueError as error:
+        raise HTTPException(422, "invalid_routeros_port") from error
+    if not 1 <= port <= 65535:
+        raise HTTPException(422, "invalid_routeros_port")
+    username = fields.get("routeros_username", [""])[0].strip()
+    password = fields.get("routeros_password", [""])[0].strip()
+    updated = TenantIntegrationSettings(
+        app_env=current.app_env,
+        mkauth_mode=current.mkauth_mode,
+        mkauth_base_url=current.mkauth_base_url,
+        mkauth_client_id=current.mkauth_client_id,
+        mkauth_client_secret=current.mkauth_client_secret,
+        mkauth_verify_ssl=current.mkauth_verify_ssl,
+        mkauth_allow_http=current.mkauth_allow_http,
+        mkauth_writes_enabled=current.mkauth_writes_enabled,
+        routeros_mode=routeros_mode,
+        routeros_host=host or current.routeros_host,
+        routeros_port=port,
+        routeros_username=username or current.routeros_username,
+        routeros_password=password or current.routeros_password,
+    )
+    integration_config_store.save(organization_id, updated)
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "mikrotik_config_updated",
+        "mikrotik_config",
+        {
+            "mode": routeros_mode,
+            "host": updated.routeros_host,
+            "port": updated.routeros_port,
+            "username_changed": bool(username),
+            "password_changed": bool(password),
+        },
+    )
+    return RedirectResponse("/central#mikrotik", status_code=303)
 
 
 @router.post("/central/financeiro/mercadopago/config", include_in_schema=False)
