@@ -22,6 +22,7 @@ from app.api.routes import (
     sync,
     support,
     technician_auth,
+    whatsapp_webhook,
     work_orders,
 )
 
@@ -71,3 +72,4 @@ app.include_router(central.router)
 app.include_router(platform.router)
 app.include_router(client_portal.router)
 app.include_router(support.router)
+app.include_router(whatsapp_webhook.router)

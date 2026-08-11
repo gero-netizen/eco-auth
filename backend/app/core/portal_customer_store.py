@@ -48,6 +48,10 @@ class PortalCustomerStore:
                 connection.execute(
                     "ALTER TABLE portal_customers ADD COLUMN external_login TEXT"
                 )
+            if "phone" not in columns:
+                connection.execute(
+                    "ALTER TABLE portal_customers ADD COLUMN phone TEXT"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path, timeout=10)
@@ -119,6 +123,7 @@ class PortalCustomerStore:
         password: str,
         external_customer_id: str | None = None,
         external_login: str | None = None,
+        phone: str | None = None,
     ) -> dict:
         customer_id = f"portal-customer-{uuid4()}"
         if external_customer_id and external_login:
@@ -130,8 +135,8 @@ class PortalCustomerStore:
                 connection.execute(
                     """INSERT INTO portal_customers
                     (id, organization_id, name, username, password_hash,
-                     external_customer_id, external_login)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                     external_customer_id, external_login, phone)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         customer_id,
                         organization_id,
@@ -140,6 +145,7 @@ class PortalCustomerStore:
                         self._hash_password(password),
                         external_customer_id,
                         external_login,
+                        phone,
                     ),
                 )
         except sqlite3.IntegrityError as error:
@@ -217,6 +223,26 @@ class PortalCustomerStore:
         if existing is not None:
             raise ValueError("mkauth_customer_already_linked")
 
+    def set_phone(self, organization_id: str, customer_id: str, phone: str | None) -> None:
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE portal_customers SET phone = ? WHERE organization_id = ? AND id = ?",
+                (phone, organization_id, customer_id),
+            )
+        if updated.rowcount == 0:
+            raise KeyError("portal_customer_not_found")
+
+    def get_by_external_login(
+        self, organization_id: str, external_login: str
+    ) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM portal_customers
+                WHERE organization_id = ? AND lower(external_login) = lower(?) AND active = 1""",
+                (organization_id, external_login),
+            ).fetchone()
+        return self._public(row) if row else None
+
     @staticmethod
     def _public(row: sqlite3.Row) -> dict:
         return {
@@ -226,6 +252,7 @@ class PortalCustomerStore:
             "username": row["username"],
             "external_customer_id": row["external_customer_id"],
             "external_login": row["external_login"],
+            "phone": row["phone"],
             "active": row["active"],
             "created_at": row["created_at"],
         }

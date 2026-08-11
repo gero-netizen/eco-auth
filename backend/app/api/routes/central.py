@@ -14,10 +14,7 @@ from app.api.routes.olt import provisioning_store
 from app.integrations.mkauth.client import simulated_mkauth_gateway
 from app.integrations.mkauth.inventory import simulated_inventory_gateway
 from app.api.routes.financial import list_financial_accounts
-from app.api.routes.notifications import (
-    list_simulated_messages,
-    record_simulated_portal_invite_message,
-)
+from app.api.routes.notifications import record_simulated_portal_invite_message
 from app.api.routes.support import list_support_requests, mark_answered, mark_forwarded
 from app.api.routes.network import list_active_alerts
 from app.api.routes.central_auth import (
@@ -40,6 +37,10 @@ from app.core.organization_store import organization_store
 from app.core.ai_support_store import CATEGORIES, CATEGORY_LABELS, ai_support_store
 from app.core.ai_provider_store import SUPPORTED_MODELS, ai_provider_store
 from app.core.ai_usage_store import ai_usage_store
+from app.core.whatsapp_config_store import whatsapp_config_store
+from app.core.whatsapp_consent_store import whatsapp_consent_store
+from app.core.whatsapp_message_store import whatsapp_message_store
+from app.core.whatsapp_orchestrator import send_whatsapp_message
 from app.integrations.mkauth.api_client import MkAuthApiClient
 
 router = APIRouter(
@@ -74,7 +75,16 @@ async def central_dashboard(
         "sim-os-1", organization_id
     )
     financial_accounts = list_financial_accounts(organization_id)
-    messages = list_simulated_messages(organization_id)[:5]
+    messages = whatsapp_message_store.list_recent(organization_id, limit=15)
+    whatsapp_config = whatsapp_config_store.get(organization_id)
+    whatsapp_blocked = whatsapp_consent_store.list_blocked(organization_id)
+    whatsapp_inbound_phones = list(
+        dict.fromkeys(
+            item["phone"]
+            for item in whatsapp_message_store.list_recent(organization_id, limit=100)
+            if item["direction"] == "inbound"
+        )
+    )[:10]
     support_requests = list_support_requests(organization_id=organization_id)
     ai_knowledge = ai_support_store.list_knowledge(organization_id)
     ai_drafts = ai_support_store.list_drafts(organization_id)
@@ -192,22 +202,32 @@ async def central_dashboard(
         f"<button type='submit'>Simular Pix</button></form></td></tr>"
         for account in financial_accounts
     )
+    status_labels = {
+        "sent": "Enviado (real)",
+        "failed": "Falhou",
+        "simulated_sent": "Simulado",
+        "blocked": "Bloqueado (opt-out)",
+        "received": "Recebido",
+    }
+
     def message_content(message: dict) -> str:
-        content = escape(message["message"])
+        content = escape(message["body"])
         if message.get("template") == "portal_access_invite":
-            invite_url = str(message["message"]).rsplit(" ", 1)[-1]
+            invite_url = str(message["body"]).rsplit(" ", 1)[-1]
             content += (
                 f"<br><a class='button-link' href='{escape(invite_url)}' "
                 "target='_blank' rel='noopener'>ABRIR CONVITE</a>"
             )
+        if message.get("status") == "failed" and message.get("error_reason"):
+            content += f"<br><span class='alert'>{escape(message['error_reason'])}</span>"
         return content
 
     message_rows = "".join(
-        f"<tr><td>{escape(message['template'])}</td>"
-        f"<td>{escape(message.get('login', '-'))}</td>"
-        f"<td>{escape(message['recipient'])}</td>"
+        f"<tr><td>{escape(message['template'] or '-')}</td>"
+        f"<td>{escape(message.get('login') or '-')}</td>"
+        f"<td>{escape(message['phone'])}</td>"
         f"<td>{message_content(message)}</td>"
-        f"<td>{escape(message['status'])}</td>"
+        f"<td>{escape(status_labels.get(message['status'], message['status']))}</td>"
         f"<td>{escape(message['created_at'])}</td></tr>"
         for message in messages
     ) or "<tr><td colspan='6'>Nenhuma mensagem simulada</td></tr>"
@@ -227,6 +247,75 @@ async def central_dashboard(
         ai_config_status = "Chave configurada, mas IA real está desativada — usando somente a base de conhecimento local."
     else:
         ai_config_status = f"IA real ativa com o modelo {escape(ai_config.model)}."
+
+    def whatsapp_status_label() -> str:
+        if not whatsapp_config.access_token or not whatsapp_config.phone_number_id:
+            return "WhatsApp real ainda não configurado — todo envio automático fica simulado."
+        if not whatsapp_config.enabled:
+            return "Configurado, mas desativado — todo envio automático fica simulado."
+        return f"WhatsApp real ativo (número {escape(whatsapp_config.phone_number_id)})."
+
+    def whatsapp_inbox_panel(phone: str) -> str:
+        draft = ai_support_store.get_draft_for_request(
+            organization_id, f"whatsapp:{phone}"
+        )
+        conversation = whatsapp_message_store.list_conversation(organization_id, phone, limit=6)
+        history_html = "".join(
+            f"<p><b>{'Cliente' if item['direction'] == 'inbound' else 'Provedor'}:</b> "
+            f"{escape(item['body'])}</p>"
+            for item in conversation
+        )
+        contact_blocked = whatsapp_consent_store.is_blocked(organization_id, phone)
+        if contact_blocked:
+            return (
+                f"<div class='ai-panel'><p><b>{escape(phone)}</b></p>{history_html}"
+                "<p>Número bloqueado (opt-out). Nenhuma mensagem automática será enviada até desbloquear.</p></div>"
+            )
+        if draft is None:
+            return f"<div class='ai-panel'><p><b>{escape(phone)}</b></p>{history_html}</div>"
+        if draft["status"] == "approved":
+            final_answer = draft["edited_answer"] or draft["answer"]
+            return (
+                f"<div class='ai-panel ai-panel-done'><p><b>{escape(phone)}</b></p>{history_html}"
+                f"<p><b>Resposta aprovada e enviada:</b> {escape(final_answer)}</p></div>"
+            )
+        if draft["status"] in ("rejected", "forwarded"):
+            note = (
+                "Rejeitado — aguardando atendimento manual."
+                if draft["status"] == "rejected"
+                else f"Encaminhado para: {escape(CATEGORY_LABELS.get(draft['forwarded_to'], draft['forwarded_to'] or ''))}"
+            )
+            return f"<div class='ai-panel ai-panel-done'><p><b>{escape(phone)}</b></p>{history_html}<p>{note}</p></div>"
+        low_confidence_warning = (
+            "<p class='alert'>Confiança baixa: escreva a resposta antes de aprovar.</p>"
+            if draft["confidence"] == "low" else ""
+        )
+        return (
+            f"<div class='ai-panel'><p><b>{escape(phone)}</b></p>{history_html}"
+            f"<p><b>Sugestão do assistente</b> — confiança: {escape(confidence_labels.get(draft['confidence'], draft['confidence']))} • "
+            f"fonte: {escape(draft['source_title'] or 'nenhuma, escalar para atendente')}</p>"
+            f"<form method='post' action='/central/whatsapp/{escape(phone)}/aprovar' class='ai-review-form'>"
+            f"<textarea name='edited_answer' maxlength='1000'>{escape(draft['answer'])}</textarea>"
+            f"{low_confidence_warning}"
+            "<button type='submit'>APROVAR E RESPONDER</button></form>"
+            f"<form method='post' action='/central/whatsapp/{escape(phone)}/rejeitar' class='ai-review-form'>"
+            "<button type='submit' class='secondary'>REJEITAR</button></form>"
+            f"<form method='post' action='/central/whatsapp/{escape(phone)}/encaminhar' class='ai-review-form'>"
+            f"<select name='forwarded_to' required><option value=''>Encaminhar para o setor…</option>{forward_sector_options}</select>"
+            "<button type='submit' class='secondary'>ENCAMINHAR</button></form></div>"
+        )
+
+    whatsapp_inbox_html = "".join(
+        whatsapp_inbox_panel(phone) for phone in whatsapp_inbound_phones
+    ) or "<p>Nenhuma conversa recebida ainda.</p>"
+
+    whatsapp_blocked_rows = "".join(
+        f"<tr><td>{escape(item['phone'])}</td><td>{escape(item['reason'] or '-')}</td>"
+        f"<td>{escape(item['blocked_at'])}</td><td>"
+        f"<form method='post' action='/central/whatsapp/{escape(item['phone'])}/desbloquear'>"
+        "<button type='submit' class='secondary'>DESBLOQUEAR</button></form></td></tr>"
+        for item in whatsapp_blocked
+    ) or "<tr><td colspan='4'>Nenhum número bloqueado.</td></tr>"
 
     def support_ai_panel(item: dict) -> str:
         draft = ai_support_store.get_draft_for_request(organization_id, str(item["id"]))
@@ -426,6 +515,7 @@ async def central_dashboard(
         f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
         f"<td>{escape(item['external_login'] or 'Não vinculado')}</td>"
         f"<td>{escape(item['external_customer_id'] or '-')}</td>"
+        f"<td>{escape(item.get('phone') or 'Não informado')}</td>"
         f"<td>{'Ativo' if item['active'] else 'Inativo'}</td><td>"
         + (
             f"<form method='post' action='/central/portal-customers/{escape(item['id'])}/toggle'>"
@@ -439,10 +529,13 @@ async def central_dashboard(
             f"<input name='external_login' value='{escape(item['external_login'] or '')}' placeholder='Login MK-AUTH' required>"
             f"<input name='external_customer_id' value='{escape(item['external_customer_id'] or '')}' placeholder='Identificador MK-AUTH' required>"
             "<button type='submit'>VINCULAR</button></form>"
+            f"<form method='post' action='/central/portal-customers/{escape(item['id'])}/phone'>"
+            f"<input name='phone' value='{escape(item.get('phone') or '')}' placeholder='+55 71 91234-5678'>"
+            "<button type='submit'>SALVAR TELEFONE</button></form>"
             if can_manage_users else "-"
         ) + "</td></tr>"
         for item in portal_customers
-    ) or "<tr><td colspan='6'>Nenhum cliente cadastrado.</td></tr>"
+    ) or "<tr><td colspan='7'>Nenhum cliente cadastrado.</td></tr>"
     subscription = subscription_store.get_or_create(organization_id)
     subscription_plan = subscription["plan"]
     active_user_count = sum(bool(item["active"]) for item in all_central_users)
@@ -751,7 +844,7 @@ async def central_dashboard(
       <section class="module-panel" data-module="portal-customers">
         <h2>Clientes do portal</h2>
         <p>Contas que já possuem acesso ao portal deste provedor. Senhas nunca são exibidas.</p>
-        <table><thead><tr><th>Nome</th><th>Usuário</th><th>Login MK-AUTH</th><th>Identificador MK-AUTH</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{portal_customer_rows}</tbody></table>
+        <table><thead><tr><th>Nome</th><th>Usuário</th><th>Login MK-AUTH</th><th>Identificador MK-AUTH</th><th>Telefone/WhatsApp</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{portal_customer_rows}</tbody></table>
       </section>
       {branding_panel}
       {subscription_panel}
@@ -826,11 +919,33 @@ async def central_dashboard(
         <table><thead><tr><th>Pergunta</th><th>Sugestão</th><th>Origem</th><th>Confiança</th><th>Avaliação</th></tr></thead><tbody>{ai_draft_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="whatsapp">
-        <h2>WhatsApp simulado</h2>
-        <p>Nenhuma mensagem real será enviada. Destinatário fictício: +55 (00) 00000-0000.</p>
+        <h2>WhatsApp</h2>
+        <p>{whatsapp_status_label()}</p>
+        <h3>Configuração real (Meta WhatsApp Cloud API)</h3>
+        <form class="create-order" method="post" action="/central/whatsapp/config">
+          <label><input type="checkbox" name="enabled" value="1" {'checked' if whatsapp_config.enabled else ''}> Ativar WhatsApp real para este provedor</label>
+          <label>ID do número de telefone<input name="phone_number_id" value="{escape(whatsapp_config.phone_number_id)}" placeholder="Ex.: 109876543210123"></label>
+          <label>ID da conta comercial (WABA)<input name="business_account_id" value="{escape(whatsapp_config.business_account_id)}" placeholder="Ex.: 123456789012345"></label>
+          <label>Token de acesso<input type="password" name="access_token" placeholder="{'Deixe em branco para manter o token atual' if whatsapp_config.access_token else 'EAAG...'}"></label>
+          <label>Segredo do app (assinatura do webhook)<input type="password" name="app_secret" placeholder="{'Deixe em branco para manter o segredo atual' if whatsapp_config.app_secret else 'Segredo do app na Meta'}"></label>
+          <label>Token de verificação do webhook<input name="verify_token" value="{escape(whatsapp_config.verify_token)}" placeholder="Escolha uma palavra-chave"></label>
+          <button type="submit">SALVAR CONFIGURAÇÃO DO WHATSAPP</button>
+        </form>
+        <p><b>URL do webhook a cadastrar na Meta:</b> <code>/api/v1/whatsapp/webhook/{escape(session['organization']['slug'])}</code> (complete com o seu domínio na frente)</p>
+        <h3>Testar envio real</h3>
+        <form class="create-order" method="post" action="/central/whatsapp/test-send">
+          <label>Número (com DDI, ex: 5571999998888)<input name="phone" placeholder="5571999998888" required></label>
+          <label>Mensagem<input name="body" maxlength="500" placeholder="Mensagem de teste" required></label>
+          <button type="submit">ENVIAR TESTE</button>
+        </form>
+        <h3>Conversas recebidas</h3>
+        {whatsapp_inbox_html}
+        <h3>Números bloqueados (opt-out)</h3>
+        <table><thead><tr><th>Número</th><th>Motivo</th><th>Bloqueado em UTC</th><th>Ação</th></tr></thead><tbody>{whatsapp_blocked_rows}</tbody></table>
+        <h3>Histórico de mensagens</h3>
         <form method="post" action="/api/v1/notifications/simulate/invoice_reminder?redirect=true"><button type="submit">Simular lembrete de fatura</button></form>
         <form method="post" action="/api/v1/notifications/simulate/maintenance?redirect=true"><button class="secondary" type="submit">Simular aviso de manutenção</button></form>
-        <table><thead><tr><th>Modelo</th><th>Login</th><th>Destinatário fictício</th><th>Mensagem</th><th>Status</th><th>Data UTC</th></tr></thead><tbody>{message_rows}</tbody></table>
+        <table><thead><tr><th>Modelo</th><th>Login</th><th>Destinatário</th><th>Mensagem</th><th>Status</th><th>Data UTC</th></tr></thead><tbody>{message_rows}</tbody></table>
       </section>
       </div>
     </div>
@@ -1753,12 +1868,14 @@ async def central_create_portal_customer(
     password = fields.get("password", [""])[0]
     external_login = fields.get("external_login", [""])[0].strip()
     external_customer_id = fields.get("external_customer_id", [""])[0].strip()
+    phone = fields.get("phone", [""])[0].strip() or None
     if (
         len(name) < 3
         or len(username) < 3
         or len(password) < 8
         or not external_login
         or not external_customer_id
+        or (phone is not None and not re.fullmatch(r"\+?[0-9 ()\-]{8,20}", phone))
     ):
         raise HTTPException(422, "invalid_portal_customer_data")
     try:
@@ -1769,9 +1886,30 @@ async def central_create_portal_customer(
             password,
             external_customer_id,
             external_login,
+            phone,
         )
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
+    return RedirectResponse("/central#portal-customers", status_code=303)
+
+
+@router.post(
+    "/central/portal-customers/{customer_id}/phone", include_in_schema=False
+)
+async def central_set_portal_customer_phone(
+    customer_id: str,
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    phone = fields.get("phone", [""])[0].strip()
+    if phone and not re.fullmatch(r"\+?[0-9 ()\-]{8,20}", phone):
+        raise HTTPException(422, "invalid_phone")
+    try:
+        portal_customer_store.set_phone(organization_id, customer_id, phone or None)
+    except KeyError as error:
+        raise HTTPException(404, "portal_customer_not_found") from error
     return RedirectResponse("/central#portal-customers", status_code=303)
 
 
@@ -1863,6 +2001,151 @@ async def central_rate_ai_draft(
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error)) from error
     return RedirectResponse("/central#ai-support", status_code=303)
+
+
+@router.post("/central/whatsapp/config", include_in_schema=False)
+async def central_save_whatsapp_config(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    enabled = fields.get("enabled", ["0"])[0] == "1"
+    phone_number_id = fields.get("phone_number_id", [""])[0].strip()
+    business_account_id = fields.get("business_account_id", [""])[0].strip()
+    access_token = fields.get("access_token", [""])[0].strip()
+    app_secret = fields.get("app_secret", [""])[0].strip()
+    verify_token = fields.get("verify_token", [""])[0].strip()
+    whatsapp_config_store.save(
+        organization_id,
+        enabled=enabled,
+        phone_number_id=phone_number_id,
+        business_account_id=business_account_id,
+        verify_token=verify_token,
+        access_token=access_token or None,
+        app_secret=app_secret or None,
+    )
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "whatsapp_config_updated",
+        "whatsapp_config",
+        {
+            "enabled": enabled,
+            "phone_number_id": phone_number_id,
+            "access_token_changed": bool(access_token),
+            "app_secret_changed": bool(app_secret),
+        },
+    )
+    return RedirectResponse("/central#whatsapp", status_code=303)
+
+
+@router.post("/central/whatsapp/test-send", include_in_schema=False)
+async def central_whatsapp_test_send(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    phone = fields.get("phone", [""])[0].strip()
+    body = fields.get("body", [""])[0].strip()
+    if not re.fullmatch(r"\d{8,15}", phone) or not 1 <= len(body) <= 500:
+        raise HTTPException(422, "invalid_test_send_data")
+    send_whatsapp_message(organization_id, body, "manual_test", phone=phone)
+    return RedirectResponse("/central#whatsapp", status_code=303)
+
+
+@router.post("/central/whatsapp/{phone}/aprovar", include_in_schema=False)
+async def central_approve_whatsapp_draft(
+    phone: str,
+    request: Request,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    edited_answer = fields.get("edited_answer", [""])[0].strip()
+    draft = ai_support_store.get_draft_for_request(organization_id, f"whatsapp:{phone}")
+    if draft is None:
+        raise HTTPException(404, "whatsapp_draft_not_found")
+    try:
+        updated = ai_support_store.review_draft(
+            organization_id, draft["id"], "approved", session["user"],
+            edited_answer=edited_answer,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    final_answer = updated["edited_answer"] or updated["answer"]
+    send_whatsapp_message(organization_id, final_answer, "ai_reply", phone=phone)
+    audit_store.record(
+        organization_id, session["user"], "whatsapp_draft_approved", f"whatsapp:{phone}",
+        {"draft_id": updated["id"], "confidence": updated["confidence"]},
+    )
+    return RedirectResponse("/central#whatsapp", status_code=303)
+
+
+@router.post("/central/whatsapp/{phone}/rejeitar", include_in_schema=False)
+async def central_reject_whatsapp_draft(
+    phone: str,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    draft = ai_support_store.get_draft_for_request(organization_id, f"whatsapp:{phone}")
+    if draft is None:
+        raise HTTPException(404, "whatsapp_draft_not_found")
+    try:
+        ai_support_store.review_draft(organization_id, draft["id"], "rejected", session["user"])
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    audit_store.record(
+        organization_id, session["user"], "whatsapp_draft_rejected", f"whatsapp:{phone}",
+        {"draft_id": draft["id"]},
+    )
+    return RedirectResponse("/central#whatsapp", status_code=303)
+
+
+@router.post("/central/whatsapp/{phone}/encaminhar", include_in_schema=False)
+async def central_forward_whatsapp_draft(
+    phone: str,
+    request: Request,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+    forwarded_to = fields.get("forwarded_to", [""])[0].strip()
+    draft = ai_support_store.get_draft_for_request(organization_id, f"whatsapp:{phone}")
+    if draft is None:
+        raise HTTPException(404, "whatsapp_draft_not_found")
+    try:
+        ai_support_store.review_draft(
+            organization_id, draft["id"], "forwarded", session["user"],
+            forwarded_to=forwarded_to,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    audit_store.record(
+        organization_id, session["user"], "whatsapp_draft_forwarded", f"whatsapp:{phone}",
+        {"draft_id": draft["id"], "forwarded_to": forwarded_to},
+    )
+    return RedirectResponse("/central#whatsapp", status_code=303)
+
+
+@router.post("/central/whatsapp/{phone}/desbloquear", include_in_schema=False)
+async def central_unblock_whatsapp_number(
+    phone: str,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    whatsapp_consent_store.unblock(organization_id, phone)
+    audit_store.record(
+        organization_id, session["user"], "whatsapp_number_unblocked", phone, {}
+    )
+    return RedirectResponse("/central#whatsapp", status_code=303)
 
 
 @router.post("/central/ai/knowledge", include_in_schema=False)

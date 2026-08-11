@@ -40,7 +40,6 @@ from app.api.routes.network import (
 from app.api.routes.notifications import (
     list_simulated_messages,
     record_simulated_payment_message,
-    simulated_messages,
 )
 from app.core.tenant_context import set_current_organization
 
@@ -340,18 +339,15 @@ def test_network_alerts_are_isolated_by_organization() -> None:
 def test_simulated_notifications_are_isolated_by_organization() -> None:
     first_id = f"notifications-first-{uuid4()}"
     second_id = f"notifications-second-{uuid4()}"
-    initial_count = len(simulated_messages)
-    try:
-        set_current_organization(first_id)
-        created = record_simulated_payment_message("cliente-1", "100", "49.90", 0)
+    before_first = {item["id"] for item in list_simulated_messages(first_id)}
+    set_current_organization(first_id)
+    created = record_simulated_payment_message("cliente-1", "100", "49.90", 0)
+    set_current_organization(get_settings().default_organization_id)
 
-        assert [item["id"] for item in list_simulated_messages(first_id)] == [
-            created["id"]
-        ]
-        assert list_simulated_messages(second_id) == []
-    finally:
-        del simulated_messages[initial_count:]
-        set_current_organization(get_settings().default_organization_id)
+    after_first = [item["id"] for item in list_simulated_messages(first_id)]
+    assert created["id"] in after_first
+    assert set(after_first) - before_first == {created["id"]}
+    assert list_simulated_messages(second_id) == []
 
 
 def test_financial_histories_are_isolated_by_organization(tmp_path) -> None:

@@ -320,8 +320,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "Resolvido por pagamento" in response.text
     assert "o acesso não foi alterado" in response.text
     assert "Nenhuma baixa real" in response.text
-    assert "WhatsApp simulado" in response.text
-    assert "Destinatário fictício" in response.text
+    assert "Configuração real (Meta WhatsApp Cloud API)" in response.text
+    assert "WhatsApp real ainda não configurado" in response.text
     assert "Notificação registrada no WhatsApp simulado" in response.text
     assert 'http-equiv="refresh"' not in response.text
     assert "Atualização automática desativada" in response.text
@@ -358,7 +358,7 @@ def test_portal_invite_sets_password_once_without_sending_password() -> None:
     message = list_simulated_messages("g7-networks")[0]
     assert message["template"] == "portal_access_invite"
     assert message["login"] == external_login
-    invite_url = message["message"].split()[-1]
+    invite_url = message["body"].split()[-1]
 
     anonymous = TestClient(app)
     assert anonymous.get(invite_url).status_code == 200
@@ -521,8 +521,7 @@ def test_whatsapp_simulator_uses_only_a_fictitious_recipient() -> None:
     assert response.status_code == 200
     message = response.json()
     assert message["status"] == "simulated_sent"
-    assert message["recipient"] == "+55 (00) 00000-0000"
-    assert message["simulated"] is True
+    assert message["phone"] == "+55 (00) 00000-0000"
 
 
 def test_central_can_create_a_work_order_for_mobile_sync() -> None:

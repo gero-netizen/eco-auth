@@ -1,11 +1,11 @@
-from datetime import datetime, timezone
-from uuid import uuid4
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
 from app.api.routes.central_auth import require_central_access
+from app.core.portal_customer_store import portal_customer_store
 from app.core.tenant_context import get_current_organization
+from app.core.whatsapp_message_store import whatsapp_message_store
+from app.core.whatsapp_orchestrator import send_whatsapp_message
 
 router = APIRouter(
     prefix="/notifications",
@@ -13,12 +13,20 @@ router = APIRouter(
     dependencies=[Depends(require_central_access)],
 )
 
-simulated_messages: list[dict] = []
-
 _templates = {
     "invoice_reminder": "Lembrete simulado: sua fatura de bancada está disponível.",
     "maintenance": "Aviso simulado: haverá manutenção programada na rede de bancada.",
 }
+
+
+def _phone_for_login(organization_id: str, login: str | None) -> str | None:
+    """Busca o telefone real cadastrado do cliente pelo login do MK-AUTH, se
+    existir. Sem isso, o envio permanece simulado — nunca inventamos um
+    número."""
+    if not login:
+        return None
+    customer = portal_customer_store.get_by_external_login(organization_id, login)
+    return customer["phone"] if customer and customer.get("phone") else None
 
 
 def record_simulated_payment_message(
@@ -27,6 +35,7 @@ def record_simulated_payment_message(
     amount: str,
     remaining_titles: int,
 ) -> dict:
+    organization_id = get_current_organization()
     access_released = remaining_titles == 0
     template = (
         "payment_confirmed_access_released"
@@ -43,20 +52,10 @@ def record_simulated_payment_message(
             f"Pagamento Pix confirmado para o login {login}, título {title_number}, "
             f"no valor de R$ {amount}. Ainda existem {remaining_titles} título(s) pendente(s)."
         )
-    message = {
-        "organization_id": get_current_organization(),
-        "id": str(uuid4()),
-        "channel": "whatsapp",
-        "recipient": "+55 (00) 00000-0000",
-        "login": login,
-        "template": template,
-        "message": message_text,
-        "status": "simulated_sent",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "simulated": True,
-    }
-    simulated_messages.append(message)
-    return message
+    phone = _phone_for_login(organization_id, login)
+    return send_whatsapp_message(
+        organization_id, message_text, template, phone=phone, login=login
+    )
 
 
 def record_simulated_portal_invite_message(
@@ -64,35 +63,22 @@ def record_simulated_portal_invite_message(
     login: str,
     invite_url: str,
 ) -> dict:
-    message = {
-        "organization_id": organization_id,
-        "id": str(uuid4()),
-        "channel": "whatsapp",
-        "recipient": "+55 (00) 00000-0000",
-        "login": login,
-        "template": "portal_access_invite",
-        "message": (
-            "Seu acesso ao Portal do Cliente foi criado. "
-            f"Defina sua senha usando este link temporário: {invite_url}"
-        ),
-        "status": "simulated_sent",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "simulated": True,
-    }
-    simulated_messages.append(message)
-    return message
+    message_text = (
+        "Seu acesso ao Portal do Cliente foi criado. "
+        f"Defina sua senha usando este link temporário: {invite_url}"
+    )
+    phone = _phone_for_login(organization_id, login)
+    return send_whatsapp_message(
+        organization_id,
+        message_text,
+        "portal_access_invite",
+        phone=phone,
+        login=login,
+    )
 
 
 def list_simulated_messages(organization_id: str | None = None) -> list[dict]:
-    current_organization_id = organization_id or get_current_organization()
-    return list(
-        reversed(
-            [
-                item for item in simulated_messages
-                if item.get("organization_id") == current_organization_id
-            ]
-        )
-    )
+    return whatsapp_message_store.list_recent(organization_id, limit=200)
 
 
 @router.get("/messages")
@@ -105,18 +91,7 @@ async def simulate_message(template: str, redirect: bool = False):
     message_text = _templates.get(template)
     if message_text is None:
         raise HTTPException(404, "simulated_template_not_found")
-    message = {
-        "organization_id": get_current_organization(),
-        "id": str(uuid4()),
-        "channel": "whatsapp",
-        "recipient": "+55 (00) 00000-0000",
-        "template": template,
-        "message": message_text,
-        "status": "simulated_sent",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "simulated": True,
-    }
-    simulated_messages.append(message)
+    message = send_whatsapp_message(get_current_organization(), message_text, template)
     if redirect:
         return RedirectResponse("/central", status_code=303)
     return message
