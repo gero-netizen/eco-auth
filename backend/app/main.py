@@ -36,15 +36,39 @@ async def _trust_unlock_expiration_loop() -> None:
         await asyncio.sleep(60)
 
 
+async def _network_monitor_loop() -> None:
+    from app.core.network_monitor import check_network_health
+    from app.core.organization_store import organization_store
+    from app.core.tenant_context import set_current_organization
+
+    while True:
+        try:
+            for organization in organization_store.list_all():
+                if not organization.get("active"):
+                    continue
+                set_current_organization(organization["id"])
+                try:
+                    await check_network_health(organization["id"])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     expiration_task = asyncio.create_task(_trust_unlock_expiration_loop())
+    network_monitor_task = asyncio.create_task(_network_monitor_loop())
     try:
         yield
     finally:
         expiration_task.cancel()
+        network_monitor_task.cancel()
         with suppress(asyncio.CancelledError):
             await expiration_task
+        with suppress(asyncio.CancelledError):
+            await network_monitor_task
 
 
 app = FastAPI(

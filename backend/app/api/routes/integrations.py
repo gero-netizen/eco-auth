@@ -372,8 +372,14 @@ async def diagnose_routeros() -> dict:
             settings.routeros_password,
         )
         diagnostic = await asyncio.to_thread(client.diagnose)
-    except Exception:
-        return {"status": "connection_error", "read_only": True, "reason": "routeros_unavailable"}
+    except Exception as error:
+        return {
+            "status": "connection_error",
+            "read_only": True,
+            "reason": "routeros_unavailable",
+            "error_type": type(error).__name__,
+            "error_detail": str(error) or "sem detalhes retornados pela biblioteca",
+        }
     radius_entries = diagnostic.get("radius", [])
     enabled_ppp_radius = [
         item

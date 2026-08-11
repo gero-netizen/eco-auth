@@ -56,6 +56,32 @@ def test_routeros_diagnostic_is_normalized_and_read_only(monkeypatch) -> None:
     assert "routeros_password" not in response
 
 
+def test_routeros_diagnostic_surfaces_the_real_error_reason(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        routeros_mode="real",
+        routeros_host="192.168.20.1",
+        routeros_port=8728,
+        routeros_username="app_api",
+        routeros_password="wrong-password",
+        mkauth_base_url="https://172.31.255.2",
+    )
+
+    class StubClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def diagnose(self) -> dict:
+            raise TimeoutError("timed out waiting for a response")
+
+    monkeypatch.setattr(integrations, "get_settings", lambda: settings)
+    monkeypatch.setattr(integrations, "RouterOsReadOnlyClient", StubClient)
+    response = asyncio.run(integrations.diagnose_routeros())
+
+    assert response["status"] == "connection_error"
+    assert response["error_type"] == "TimeoutError"
+    assert "timed out" in response["error_detail"]
+
+
 def test_rejects_non_jwt_response() -> None:
     with pytest.raises(ValueError, match="mkauth_token_response_is_not_jwt"):
         MkAuthApiClient._validate_token("Nao autorizado")

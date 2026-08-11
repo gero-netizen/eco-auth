@@ -23,6 +23,8 @@ class NetworkAlert(BaseModel):
     area: str
     status: str
     detected_at: datetime
+    kind: str = "manual_simulation"
+    auto_detected: bool = False
     simulated: bool = True
 
 
@@ -57,6 +59,17 @@ def _initialize() -> None:
             )
             """
         )
+        incident_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(network_incidents)")
+        }
+        if "kind" not in incident_columns:
+            connection.execute(
+                "ALTER TABLE network_incidents ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'"
+            )
+        if "auto_detected" not in incident_columns:
+            connection.execute(
+                "ALTER TABLE network_incidents ADD COLUMN auto_detected INTEGER NOT NULL DEFAULT 0"
+            )
         if columns and "organization_id" not in columns:
             connection.execute(
                 """
@@ -84,13 +97,18 @@ def _initialize() -> None:
 def create_network_incident(
     connection: sqlite3.Connection | None = None,
     organization_id: str | None = None,
+    kind: str = "manual_simulation",
+    severity: str = "warning",
+    title: str = "Indisponibilidade de rede detectada",
+    area: str = "Rede de bancada",
+    auto_detected: bool = False,
 ) -> NetworkAlert:
     current_organization_id = organization_id or get_current_organization()
     alert = NetworkAlert(
         id=f"sim-network-{uuid4()}",
-        severity="warning",
-        title="Indisponibilidade de rede detectada",
-        area="Rede de bancada",
+        severity=severity,
+        title=title,
+        area=area,
         status="active",
         detected_at=datetime.now(timezone.utc),
     )
@@ -100,8 +118,9 @@ def create_network_incident(
         current.execute(
             """
             INSERT INTO network_incidents (
-                organization_id, id, severity, title, area, status, detected_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                organization_id, id, severity, title, area, status,
+                detected_at, kind, auto_detected
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 current_organization_id,
@@ -111,6 +130,8 @@ def create_network_incident(
                 alert.area,
                 alert.status,
                 alert.detected_at.isoformat(),
+                kind,
+                int(auto_detected),
             ),
         )
         if owns_connection:
@@ -119,6 +140,30 @@ def create_network_incident(
         if owns_connection:
             current.close()
     return alert
+
+
+def get_active_incident_by_kind(organization_id: str, kind: str) -> dict | None:
+    """Usado para evitar chamados duplicados: só abre um novo incidente do
+    mesmo tipo se não houver um já ativo para este provedor."""
+    with _connect() as connection:
+        row = connection.execute(
+            """SELECT * FROM network_incidents
+            WHERE organization_id = ? AND kind = ? AND status = 'active'
+            ORDER BY detected_at DESC LIMIT 1""",
+            (organization_id, kind),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def resolve_incidents_by_kind(organization_id: str, kind: str) -> int:
+    """Encerra automaticamente incidentes de um tipo quando a rede normaliza."""
+    with _connect() as connection:
+        updated = connection.execute(
+            """UPDATE network_incidents SET status = 'resolved', resolved_at = ?
+            WHERE organization_id = ? AND kind = ? AND status = 'active'""",
+            (datetime.now(timezone.utc).isoformat(), organization_id, kind),
+        )
+    return updated.rowcount
 
 
 def list_active_alerts(organization_id: str | None = None) -> list[NetworkAlert]:
@@ -140,6 +185,8 @@ def list_active_alerts(organization_id: str | None = None) -> list[NetworkAlert]
             area=row["area"],
             status=row["status"],
             detected_at=datetime.fromisoformat(row["detected_at"]),
+            kind=row["kind"],
+            auto_detected=bool(row["auto_detected"]),
         )
         for row in rows
     ]

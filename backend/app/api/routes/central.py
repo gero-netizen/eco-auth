@@ -17,6 +17,7 @@ from app.api.routes.financial import list_financial_accounts
 from app.api.routes.notifications import record_simulated_portal_invite_message
 from app.api.routes.support import list_support_requests, mark_answered, mark_forwarded
 from app.api.routes.network import list_active_alerts
+from app.core.network_metrics_store import network_metrics_store
 from app.api.routes.central_auth import (
     require_central_access,
     require_central_roles,
@@ -442,9 +443,19 @@ async def central_dashboard(
     ) or "<tr><td colspan='5'>Nenhum rascunho preparado.</td></tr>"
     network_rows = "".join(
         f"<tr><td>{escape(alert.title)}</td><td>{escape(alert.area)}</td>"
+        f"<td>{escape(alert.severity)}</td>"
+        f"<td>{'Detectado automaticamente' if alert.auto_detected else 'Simulado manualmente'}</td>"
         f"<td>{escape(alert.detected_at.isoformat())}</td></tr>"
         for alert in network_alerts
-    ) or "<tr><td colspan='3'>Nenhuma ocorrência ativa.</td></tr>"
+    ) or "<tr><td colspan='5'>Nenhuma ocorrência ativa.</td></tr>"
+    network_metric_rows = "".join(
+        f"<tr><td>{escape(item['recorded_at'])}</td>"
+        f"<td>{'Sim' if item['router_reachable'] else 'Não'}</td>"
+        f"<td>{item['active_sessions'] if item['active_sessions'] is not None else '-'}</td>"
+        f"<td>{item['cpu_load'] if item['cpu_load'] is not None else '-'}</td>"
+        f"<td>{'Sim' if item['radius_ok'] else 'Não' if item['radius_ok'] is not None else '-'}</td></tr>"
+        for item in network_metrics_store.list_recent(organization_id, limit=30)
+    ) or "<tr><td colspan='5'>Nenhuma leitura registrada ainda — a monitoração roda a cada 60s quando o MikroTik está em modo real.</td></tr>"
     current_user = session["user"]
     can_manage_technicians = current_user["role"] in {"owner", "admin"}
     technician_rows = "".join(
@@ -910,9 +921,12 @@ async def central_dashboard(
       {audit_panel}
       <section class="module-panel" data-module="network"><h2>Monitoramento da rede</h2>
         <p class="alert"><b>{len(network_alerts)} ocorrência(s) ativa(s)</b></p>
+        <p><small>A monitoração automática consulta o MikroTik real a cada 60 segundos quando a integração está em modo "Real": detecta roteador indisponível, RADIUS sem resposta e quedas anormais de sessões PPPoE, abrindo e encerrando ocorrências sozinha.</small></p>
         <form method="post" action="/api/v1/network/incidents/simulate"><button type="submit">SIMULAR INDISPONIBILIDADE</button></form>
         <form method="post" action="/api/v1/network/incidents/resolve"><button class="secondary" type="submit">ENCERRAR OCORRÊNCIAS</button></form>
-        <table><thead><tr><th>Ocorrência</th><th>Área</th><th>Detectada em UTC</th></tr></thead><tbody>{network_rows}</tbody></table>
+        <table><thead><tr><th>Ocorrência</th><th>Área</th><th>Severidade</th><th>Origem</th><th>Detectada em UTC</th></tr></thead><tbody>{network_rows}</tbody></table>
+        <h3>Histórico de leituras (últimas 30)</h3>
+        <table><thead><tr><th>Data UTC</th><th>Roteador acessível</th><th>Sessões ativas</th><th>CPU %</th><th>RADIUS ok</th></tr></thead><tbody>{network_metric_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="routeros-diagnostic">
         <h2>Diagnóstico PPPoE/RADIUS</h2>
@@ -1063,7 +1077,11 @@ async def central_dashboard(
           const response = await fetch('/api/v1/integrations/routeros/diagnostic', {{ headers: {{ Accept: 'application/json' }} }});
           if (!response.ok) throw new Error('request_failed');
           const data = await response.json();
-          if (data.status !== 'connected') throw new Error(data.reason || 'integration_unavailable');
+          if (data.status !== 'connected') {{
+            const error = new Error(data.reason || 'integration_unavailable');
+            error.detail = data;
+            throw error;
+          }}
           summary.replaceChildren();
           const summaryText = document.createElement('p');
           summaryText.textContent = `Roteador: ${{data.router.board}} • RouterOS ${{data.router.version}} • Uptime ${{data.router.uptime}} • CPU ${{data.router.cpu_load}}%`;
@@ -1122,8 +1140,17 @@ async def central_dashboard(
             ? (visibleSessions.length ? `Login ${{usernameFilter}} online • somente leitura` : `Login ${{usernameFilter}} offline • somente leitura`)
             : `Diagnóstico concluído • ${{data.sessions.length}} sessão(ões) ativa(s) • somente leitura`;
           routerosDiagnosticLoaded = true;
-        }} catch (_) {{
-          diagnosticStatus.textContent = 'Não foi possível consultar o MikroTik. Confira as credenciais e a configuração da API.';
+        }} catch (error) {{
+          const detail = error && error.detail;
+          if (detail && detail.status === 'configuration_error') {{
+            diagnosticStatus.textContent = 'MikroTik não configurado: preencha usuário e senha em "Integração MikroTik".';
+          }} else if (detail && detail.status === 'simulated') {{
+            diagnosticStatus.textContent = 'Integração real com o MikroTik está desativada (modo simulado).';
+          }} else if (detail && detail.error_type) {{
+            diagnosticStatus.textContent = `Não foi possível consultar o MikroTik (${{detail.error_type}}): ${{detail.error_detail || 'sem detalhes'}}. Confira IP, porta, usuário/senha e se o serviço API está habilitado no RouterOS.`;
+          }} else {{
+            diagnosticStatus.textContent = 'Não foi possível consultar o MikroTik. Confira as credenciais e a configuração da API.';
+          }}
         }}
       }};
       document.getElementById('load-routeros-diagnostic').addEventListener('click', () => loadRouterosDiagnostic(true));
