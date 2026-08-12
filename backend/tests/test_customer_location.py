@@ -106,7 +106,7 @@ def test_work_order_history_store_orders_entries_chronologically(tmp_path) -> No
     ]
 
 
-def test_update_client_location_sends_latitude_and_longitude_fields(monkeypatch) -> None:
+def test_update_client_location_sends_combined_coordenadas_field(monkeypatch) -> None:
     from app.integrations.mkauth.api_client import MkAuthApiClient
 
     captured = {}
@@ -131,8 +131,7 @@ def test_update_client_location_sends_latitude_and_longitude_fields(monkeypatch)
     monkeypatch.setattr("app.integrations.mkauth.api_client.httpx.AsyncClient", lambda **kw: _StubClient())
 
     asyncio.run(client.update_client_location("client-uuid-1", -12.25, -38.95))
-    assert captured["json"]["latitude"] == -12.25
-    assert captured["json"]["longitude"] == -38.95
+    assert captured["json"]["coordenadas"] == "-12.25,-38.95"
     assert captured["json"]["uuid"] == "client-uuid-1"
 
 

@@ -313,11 +313,10 @@ class MkAuthApiClient:
         self, client_uuid: str, latitude: float, longitude: float
     ) -> dict[str, Any]:
         """Grava a localização confirmada por GPS diretamente no cadastro
-        real do cliente no MK-AUTH. Nomes de campo (latitude/longitude) são
-        os mais comuns nas instalações do MK-AUTH — se o seu painel usar
-        nomes diferentes, é só ajustar aqui."""
+        real do cliente no MK-AUTH, no campo único 'coordenadas'
+        (formato 'latitude,longitude', confirmado no painel real)."""
         return await self.update_client(
-            client_uuid, {"latitude": latitude, "longitude": longitude}
+            client_uuid, {"coordenadas": f"{latitude},{longitude}"}
         )
 
     async def update_client(
