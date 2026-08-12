@@ -222,15 +222,18 @@ class _WorkOrderDetailPageState extends State<WorkOrderDetailPage> {
     return confirmed == true;
   }
 
-  /// Estados que encerram uma visita presencial (concluída ou não). Nesses
-  /// casos a localização do cliente é obrigatória — facilita muito a
-  /// próxima visita ao mesmo endereço.
-  static const _onSiteClosingStatuses = {
+  /// Estados que registram a presença do técnico no local — chegada
+  /// (arrived) e encerramento da visita (completed/notCompleted). Nesses
+  /// momentos a localização é obrigatória: é o registro real de
+  /// chegada/saída, e também facilita muito a próxima visita ao mesmo
+  /// endereço.
+  static const _onSitePresenceStatuses = {
+    WorkOrderStatus.arrived,
     WorkOrderStatus.completed,
     WorkOrderStatus.notCompleted,
   };
 
-  Future<_LocationRequirementOutcome> _requireLocationForClosing() async {
+  Future<_LocationRequirementOutcome> _requireLocationForPresence() async {
     while (true) {
       final location = await _locationService.captureOptional();
       if (location != null) {
@@ -279,8 +282,8 @@ class _WorkOrderDetailPageState extends State<WorkOrderDetailPage> {
 
     CapturedLocation? closingLocation;
     var hasClosingLocation = false;
-    if (_onSiteClosingStatuses.contains(status)) {
-      final outcome = await _requireLocationForClosing();
+    if (_onSitePresenceStatuses.contains(status)) {
+      final outcome = await _requireLocationForPresence();
       if (outcome.cancelled) return;
       closingLocation = outcome.location;
       hasClosingLocation = true;
@@ -550,7 +553,7 @@ String _formatHistoryDate(DateTime value) {
       '${two(local.hour)}:${two(local.minute)}';
 }
 
-/// Resultado de [_WorkOrderDetailPageState._requireLocationForClosing]:
+/// Resultado de [_WorkOrderDetailPageState._requireLocationForPresence]:
 /// [location] preenchido quando o GPS foi capturado; [cancelled] true
 /// quando o técnico desistiu de concluir a visita; nenhum dos dois quando
 /// o técnico optou explicitamente por continuar sem localização.

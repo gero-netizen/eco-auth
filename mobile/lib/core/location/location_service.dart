@@ -1,5 +1,7 @@
 import 'package:geolocator/geolocator.dart';
 
+enum LocationStatus { ready, serviceDisabled, permissionDenied, permissionDeniedForever }
+
 class CapturedLocation {
   const CapturedLocation(this.latitude, this.longitude);
 
@@ -8,6 +10,23 @@ class CapturedLocation {
 }
 
 class LocationService {
+  /// Verifica o estado do GPS sem tentar capturar uma posição — usado
+  /// para mostrar um aviso na tela quando o serviço está desligado, antes
+  /// mesmo do técnico tentar registrar algo.
+  Future<LocationStatus> checkStatus() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      return LocationStatus.serviceDisabled;
+    }
+    final permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.deniedForever) {
+      return LocationStatus.permissionDeniedForever;
+    }
+    if (permission == LocationPermission.denied) {
+      return LocationStatus.permissionDenied;
+    }
+    return LocationStatus.ready;
+  }
+
   Future<CapturedLocation?> captureOptional() async {
     if (!await Geolocator.isLocationServiceEnabled()) return null;
 

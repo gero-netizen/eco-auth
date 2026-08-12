@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../../../core/config/server_config.dart';
 import '../../../core/auth/technician_session.dart';
@@ -55,6 +58,8 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
   List<NetworkAlert> _networkAlerts = const [];
   final Set<String> _newOrderIds = {};
   Set<String> _knownOrderIds = {};
+  final _locationService = LocationService();
+  LocationStatus _locationStatus = LocationStatus.ready;
   final _notificationStore = const AssignmentNotificationStore();
   List<AssignmentNotification> _notifications = const [];
   String? _error;
@@ -113,7 +118,23 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
     super.initState();
     _loadNotifications();
     _loadLocalThenSynchronize();
+    _checkLocationStatus();
   }
+
+  Future<void> _checkLocationStatus() async {
+    final status = await _locationService.checkStatus();
+    if (mounted) setState(() => _locationStatus = status);
+  }
+
+  String get _locationWarningText => switch (_locationStatus) {
+        LocationStatus.serviceDisabled =>
+          'GPS desligado — ative para registrar chegada, saída e conclusão de visitas.',
+        LocationStatus.permissionDeniedForever =>
+          'Permissão de localização negada — ajuste nas configurações do aparelho.',
+        LocationStatus.permissionDenied =>
+          'App sem permissão de localização — necessária para registrar visitas.',
+        LocationStatus.ready => '',
+      };
 
   int get _unreadNotifications =>
       _notifications.where((notification) => !notification.read).length;
@@ -156,6 +177,7 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
 
   Future<void> _synchronize() async {
     if (_loading) return;
+    unawaited(_checkLocationStatus());
     setState(() {
       _loading = true;
       _error = null;
@@ -467,6 +489,25 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
               ),
             ],
           ),
+          if (_locationStatus != LocationStatus.ready)
+            MaterialBanner(
+              backgroundColor: Colors.amber.shade100,
+              content: Text(_locationWarningText),
+              leading: const Icon(Icons.location_off_outlined),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    if (_locationStatus == LocationStatus.serviceDisabled) {
+                      await Geolocator.openLocationSettings();
+                    } else {
+                      await Geolocator.openAppSettings();
+                    }
+                    unawaited(_checkLocationStatus());
+                  },
+                  child: const Text('AJUSTAR'),
+                ),
+              ],
+            ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
