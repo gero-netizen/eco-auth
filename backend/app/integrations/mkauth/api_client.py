@@ -309,6 +309,17 @@ class MkAuthApiClient:
             fields["data_desbloq"] = expires_at.strftime("%Y-%m-%d %H:%M:%S")
         return await self.update_client(client_uuid, fields)
 
+    async def update_client_location(
+        self, client_uuid: str, latitude: float, longitude: float
+    ) -> dict[str, Any]:
+        """Grava a localização confirmada por GPS diretamente no cadastro
+        real do cliente no MK-AUTH. Nomes de campo (latitude/longitude) são
+        os mais comuns nas instalações do MK-AUTH — se o seu painel usar
+        nomes diferentes, é só ajustar aqui."""
+        return await self.update_client(
+            client_uuid, {"latitude": latitude, "longitude": longitude}
+        )
+
     async def update_client(
         self,
         client_uuid: str,

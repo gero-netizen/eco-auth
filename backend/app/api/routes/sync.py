@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.routes.technician_auth import require_technician
 from app.core.config import get_settings
 from app.core.customer_location_store import customer_location_store
+from app.core.integration_config_store import get_integration_settings
 from app.core.sync_store import SyncOperationStore
 from app.core.work_order_history_store import work_order_history_store
 from app.domain.models import (
@@ -11,6 +12,7 @@ from app.domain.models import (
     SyncPushResponse,
     WorkOrderStatus,
 )
+from app.integrations.mkauth.api_client import MkAuthApiClient
 from app.integrations.mkauth.client import simulated_mkauth_gateway
 from app.integrations.mkauth.inventory import simulated_inventory_gateway
 
@@ -25,6 +27,29 @@ _operation_store = SyncOperationStore(get_settings().database_url)
 # momentos, se o técnico capturou GPS, a localização do cliente é atualizada
 # para facilitar a próxima visita.
 _ON_SITE_CLOSING_STATUSES = {WorkOrderStatus.COMPLETED, WorkOrderStatus.NOT_COMPLETED}
+
+
+async def _push_location_to_mkauth(
+    organization_id: str, client_uuid: str, latitude: float, longitude: float
+) -> None:
+    """Grava a localização confirmada no cadastro real do cliente no
+    MK-AUTH. Uma falha aqui nunca derruba a sincronização — a localização
+    já ficou salva no nosso banco (customer_location_store) de qualquer
+    forma; essa é só uma tentativa extra de refletir no MK-AUTH também."""
+    settings = get_integration_settings(organization_id)
+    if settings.mkauth_mode != "real" or not settings.mkauth_writes_enabled:
+        return
+    try:
+        client = MkAuthApiClient(
+            settings.mkauth_base_url,
+            settings.mkauth_client_id,
+            settings.mkauth_client_secret,
+            settings.mkauth_verify_ssl,
+            settings.mkauth_allow_http and settings.app_env == "development",
+        )
+        await client.update_client_location(client_uuid, latitude, longitude)
+    except Exception:
+        pass
 
 
 @router.post("/push", response_model=SyncPushResponse)
@@ -75,6 +100,12 @@ async def push(
                             longitude,
                             source_work_order_id=updated.id,
                             confirmed_by_technician_id=technician["id"],
+                        )
+                        await _push_location_to_mkauth(
+                            technician["organization_id"],
+                            updated.external_customer_id,
+                            latitude,
+                            longitude,
                         )
                     server_version = updated.version
                     change = {

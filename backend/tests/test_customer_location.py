@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from uuid import uuid4
 
 from app.core.customer_location_store import CustomerLocationStore
@@ -105,7 +106,95 @@ def test_work_order_history_store_orders_entries_chronologically(tmp_path) -> No
     ]
 
 
-def test_new_work_order_prefills_location_from_confirmed_customer_location() -> None:
+def test_update_client_location_sends_latitude_and_longitude_fields(monkeypatch) -> None:
+    from app.integrations.mkauth.api_client import MkAuthApiClient
+
+    captured = {}
+
+    class _StubClient:
+        async def put(self, path, json):
+            captured["path"] = path
+            captured["json"] = json
+            class _Response:
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return {"status": "sucesso"}
+            return _Response()
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+
+    client = MkAuthApiClient("https://mkauth.test", "id", "secret", True, False)
+    monkeypatch.setattr(client, "_token", lambda: asyncio.sleep(0, result="tok"))
+    monkeypatch.setattr("app.integrations.mkauth.api_client.httpx.AsyncClient", lambda **kw: _StubClient())
+
+    asyncio.run(client.update_client_location("client-uuid-1", -12.25, -38.95))
+    assert captured["json"]["latitude"] == -12.25
+    assert captured["json"]["longitude"] == -38.95
+    assert captured["json"]["uuid"] == "client-uuid-1"
+
+
+def test_push_location_to_mkauth_skips_when_not_in_real_mode(monkeypatch) -> None:
+    from app.api.routes import sync as sync_routes
+
+    called = []
+    monkeypatch.setattr(
+        sync_routes, "get_integration_settings",
+        lambda organization_id=None: SimpleNamespace(mkauth_mode="simulated", mkauth_writes_enabled=False),
+    )
+    monkeypatch.setattr(sync_routes, "MkAuthApiClient", lambda *a, **k: called.append(1))
+    asyncio.run(sync_routes._push_location_to_mkauth("provedor-x", "uuid-1", -12.0, -38.0))
+    assert called == []
+
+
+def test_push_location_to_mkauth_writes_when_real_and_enabled(monkeypatch) -> None:
+    from app.api.routes import sync as sync_routes
+
+    writes = []
+
+    class _StubClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+        async def update_client_location(self, client_uuid, latitude, longitude):
+            writes.append((client_uuid, latitude, longitude))
+
+    monkeypatch.setattr(
+        sync_routes, "get_integration_settings",
+        lambda organization_id=None: SimpleNamespace(
+            mkauth_mode="real", mkauth_writes_enabled=True,
+            mkauth_base_url="https://mkauth.test", mkauth_client_id="id",
+            mkauth_client_secret="secret", mkauth_verify_ssl=True,
+            mkauth_allow_http=False, app_env="production",
+        ),
+    )
+    monkeypatch.setattr(sync_routes, "MkAuthApiClient", _StubClient)
+    asyncio.run(sync_routes._push_location_to_mkauth("provedor-x", "uuid-1", -12.25, -38.95))
+    assert writes == [("uuid-1", -12.25, -38.95)]
+
+
+def test_push_location_to_mkauth_failure_does_not_raise(monkeypatch) -> None:
+    from app.api.routes import sync as sync_routes
+
+    class _FailingClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+        async def update_client_location(self, *args, **kwargs):
+            raise ValueError("mkauth_unreachable")
+
+    monkeypatch.setattr(
+        sync_routes, "get_integration_settings",
+        lambda organization_id=None: SimpleNamespace(
+            mkauth_mode="real", mkauth_writes_enabled=True,
+            mkauth_base_url="https://mkauth.test", mkauth_client_id="id",
+            mkauth_client_secret="secret", mkauth_verify_ssl=True,
+            mkauth_allow_http=False, app_env="production",
+        ),
+    )
+    monkeypatch.setattr(sync_routes, "MkAuthApiClient", _FailingClient)
+    # Não deve levantar exceção mesmo se o MK-AUTH falhar.
+    asyncio.run(sync_routes._push_location_to_mkauth("provedor-x", "uuid-1", -12.25, -38.95))
     from app.api.routes.work_orders import create_simulated_work_order
     from app.core.customer_location_store import customer_location_store
 
