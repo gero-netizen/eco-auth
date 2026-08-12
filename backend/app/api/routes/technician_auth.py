@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import time
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
@@ -17,6 +17,11 @@ class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=200)
     organization_slug: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
 
 
 def _signature(value: str) -> str:
@@ -83,3 +88,22 @@ async def technician_login(request: LoginRequest) -> dict:
         },
         "simulated": True,
     }
+
+
+@router.post("/technician/change-password")
+async def technician_change_password(
+    request: ChangePasswordRequest,
+    technician: dict = Depends(require_technician),
+) -> dict:
+    try:
+        technician_store.change_password(
+            technician["id"],
+            request.current_password,
+            request.new_password,
+            technician["organization_id"],
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    except KeyError as error:
+        raise HTTPException(404, str(error)) from error
+    return {"status": "changed"}

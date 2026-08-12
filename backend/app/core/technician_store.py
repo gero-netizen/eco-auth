@@ -225,6 +225,40 @@ class TechnicianStore:
         if updated.rowcount == 0:
             raise KeyError("technician_not_found")
 
+    def change_password(
+        self,
+        technician_id: str,
+        current_password: str,
+        new_password: str,
+        organization_id: str | None = None,
+    ) -> None:
+        """Troca a senha do próprio técnico. Exige a senha atual correta —
+        nunca permite trocar sem confirmar quem está pedindo."""
+        current_organization_id = organization_id or get_settings().default_organization_id
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT password_hash FROM technicians
+                WHERE id = ? AND organization_id = ? AND active = 1
+                """,
+                (technician_id, current_organization_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("technician_not_found")
+            if not self._verify_password(current_password, row["password_hash"]):
+                raise ValueError("current_password_incorrect")
+            connection.execute(
+                """
+                UPDATE technicians SET password_hash = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (
+                    self._hash_password(new_password),
+                    technician_id,
+                    current_organization_id,
+                ),
+            )
+
     def delete(self, technician_id: str, organization_id: str | None = None) -> None:
         current_organization_id = organization_id or get_settings().default_organization_id
         with self._connect() as connection:

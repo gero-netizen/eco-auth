@@ -10,7 +10,7 @@ class TechnicianLoginPage extends StatefulWidget {
     required this.onOffline,
   });
 
-  final void Function(String token, String technicianId) onAuthenticated;
+  final void Function(String token, String technicianId, String? username) onAuthenticated;
   final VoidCallback onOffline;
 
   @override
@@ -48,10 +48,11 @@ class _TechnicianLoginPageState extends State<TechnicianLoginPage> {
       final token = response.data?['access_token'] as String?;
       final technician = response.data?['technician'] as Map<String, dynamic>?;
       final technicianId = technician?['id'] as String?;
+      final username = technician?['username'] as String?;
       if (token == null || token.isEmpty || technicianId == null) {
         throw StateError('Sessão incompleta');
       }
-      widget.onAuthenticated(token, technicianId);
+      widget.onAuthenticated(token, technicianId, username);
     } on DioException catch (error) {
       setState(() => _error = error.response?.statusCode == 401
           ? 'Usuário ou senha incorretos.'

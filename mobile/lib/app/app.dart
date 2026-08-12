@@ -60,8 +60,11 @@ class _IspFieldAppState extends State<IspFieldApp> {
                   onLogout: _logout,
                 )
               : TechnicianLoginPage(
-                  onAuthenticated: (token, technicianId) async {
-                    await TechnicianSession.save(token, technicianId);
+                  onAuthenticated: (token, technicianId, username) async {
+                    await TechnicianSession.save(
+                      token, technicianId,
+                      username: username,
+                    );
                     if (!mounted) return;
                     setState(() => _entered = true);
                   },

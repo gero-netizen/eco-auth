@@ -8,15 +8,21 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from app.api.routes.technician_auth import require_technician
+from app.api.routes.central_auth import _cookie_name, _valid_session
+from app.api.routes.technician_auth import _valid_token, require_technician
 from app.core.config import get_settings
-from app.core.tenant_context import get_current_organization
+from app.core.tenant_context import get_current_organization, set_current_organization
 
 router = APIRouter(
     prefix="/work-orders",
     tags=["evidence"],
     dependencies=[Depends(require_technician)],
 )
+# Fotos e assinatura também precisam ser visíveis na Central (atendente
+# logado por sessão de navegador, não por token de técnico) — por isso essa
+# rota fica num router à parte, sem a exigência de token de técnico do
+# router acima, com uma checagem que aceita qualquer uma das duas sessões.
+public_evidence_router = APIRouter(prefix="/work-orders", tags=["evidence"])
 
 _safe_work_order_id = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _max_upload_bytes = 15 * 1024 * 1024
@@ -136,8 +142,30 @@ async def evidence_summary(work_order_id: str) -> dict:
     }
 
 
-@router.get("/{work_order_id}/evidence/{evidence_id}/file", response_class=FileResponse)
-async def download_evidence(work_order_id: str, evidence_id: UUID) -> FileResponse:
+async def require_technician_or_central_session(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> None:
+    scheme, _, token = (authorization or "").partition(" ")
+    technician = _valid_token(token) if scheme.lower() == "bearer" else None
+    if technician is not None:
+        set_current_organization(technician["organization_id"])
+        return
+    session = _valid_session(request.cookies.get(_cookie_name))
+    if session is not None:
+        set_current_organization(session["organization"]["id"])
+        return
+    raise HTTPException(401, "authentication_required")
+
+
+@public_evidence_router.get(
+    "/{work_order_id}/evidence/{evidence_id}/file", response_class=FileResponse
+)
+async def download_evidence(
+    work_order_id: str,
+    evidence_id: UUID,
+    _: None = Depends(require_technician_or_central_session),
+) -> FileResponse:
     safe_order_id = _validated_work_order_id(work_order_id)
     directory = _evidence_directory(
         safe_order_id, get_current_organization(), allow_legacy=True

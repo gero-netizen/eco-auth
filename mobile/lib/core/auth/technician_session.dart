@@ -6,28 +6,37 @@ class TechnicianSession {
   static const _storage = FlutterSecureStorage();
   static const _tokenKey = 'technician_access_token';
   static const _technicianIdKey = 'technician_id';
+  static const _usernameKey = 'technician_username';
   static String? accessToken;
   static String? technicianId;
+  static String? username;
 
   static Future<bool> restore() async {
     accessToken = await _storage.read(key: _tokenKey);
     technicianId = await _storage.read(key: _technicianIdKey);
+    username = await _storage.read(key: _usernameKey);
     return accessToken != null &&
         accessToken!.isNotEmpty &&
         technicianId != null;
   }
 
-  static Future<void> save(String token, String id) async {
+  static Future<void> save(String token, String id, {String? username}) async {
     accessToken = token;
     technicianId = id;
+    TechnicianSession.username = username;
     await _storage.write(key: _tokenKey, value: token);
     await _storage.write(key: _technicianIdKey, value: id);
+    if (username != null) {
+      await _storage.write(key: _usernameKey, value: username);
+    }
   }
 
   static Future<void> clear() async {
     accessToken = null;
     technicianId = null;
+    username = null;
     await _storage.delete(key: _tokenKey);
     await _storage.delete(key: _technicianIdKey);
+    await _storage.delete(key: _usernameKey);
   }
 }

@@ -10,6 +10,7 @@ import '../../monitoring/domain/network_alert.dart';
 import '../../notifications/data/assignment_notification_store.dart';
 import '../../notifications/domain/assignment_notification.dart';
 import '../../notifications/presentation/notification_history_page.dart';
+import '../../settings/presentation/settings_page.dart';
 import '../data/work_order_local_data_source.dart';
 import '../data/work_order_remote_data_source.dart';
 import '../data/work_order_repository.dart';
@@ -411,21 +412,36 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
               child: const Icon(Icons.notifications_outlined),
             ),
           ),
-          if (widget.onLogout != null)
-            PopupMenuButton<String>(
-              onSelected: (value) {
-                if (value == 'logout') widget.onLogout!();
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'logout' && widget.onLogout != null) {
+                widget.onLogout!();
+              } else if (value == 'settings') {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => SettingsPage(onLogout: widget.onLogout),
+                  ),
+                );
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'settings',
+                child: ListTile(
+                  leading: Icon(Icons.settings_outlined),
+                  title: Text('Configurações'),
+                ),
+              ),
+              if (widget.onLogout != null)
+                const PopupMenuItem(
                   value: 'logout',
                   child: ListTile(
                     leading: Icon(Icons.logout),
                     title: Text('Sair'),
                   ),
                 ),
-              ],
-            ),
+            ],
+          ),
         ],
       ),
       body: Column(

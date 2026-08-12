@@ -675,6 +675,52 @@ def test_uploaded_evidence_is_available_to_the_central() -> None:
     assert str(evidence_id) in gallery.text
 
 
+def test_uploaded_evidence_is_downloadable_from_a_central_session() -> None:
+    """Fotos/assinaturas precisam abrir de verdade no navegador da Central
+    (sessão por cookie), não só serem referenciadas na galeria — essa é a
+    regressão real: a rota de download exigia token de técnico, que o
+    navegador da Central nunca envia."""
+    evidence_id = uuid4()
+    content = b"fictitious-photo-content-for-central-download"
+    uploaded = client.post(
+        f"/api/v1/work-orders/sim-os-1/evidence/{evidence_id}",
+        content=content,
+        headers={
+            "X-Evidence-Category": "installation_photo",
+            "X-Content-SHA256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    assert uploaded.status_code == 200
+
+    central_client = TestClient(app)
+    central_client.post(
+        "/central/login", data={"username": "admin", "password": "Bancada@2026"}
+    )
+    downloaded = central_client.get(
+        f"/api/v1/work-orders/sim-os-1/evidence/{evidence_id}/file"
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == content
+
+
+def test_evidence_file_requires_some_valid_session() -> None:
+    evidence_id = uuid4()
+    content = b"fictitious-photo-content-for-auth-check"
+    client.post(
+        f"/api/v1/work-orders/sim-os-1/evidence/{evidence_id}",
+        content=content,
+        headers={
+            "X-Evidence-Category": "installation_photo",
+            "X-Content-SHA256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    anonymous_client = TestClient(app)
+    response = anonymous_client.get(
+        f"/api/v1/work-orders/sim-os-1/evidence/{evidence_id}/file"
+    )
+    assert response.status_code == 401
+
+
 def test_central_generates_a_printable_work_order_report() -> None:
     report = client.get("/central/work-orders/sim-os-1/report")
     assert report.status_code == 200
