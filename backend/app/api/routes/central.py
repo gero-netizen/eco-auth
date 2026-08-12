@@ -57,6 +57,7 @@ router = APIRouter(
 
 
 _last_viability_result: dict[str, dict] = {}
+_last_password_reset: dict[str, dict] = {}
 
 
 @router.get("/central", response_class=HTMLResponse)
@@ -118,6 +119,18 @@ async def central_dashboard(
             f"</b></p><p>{escape(pending_viability['message'])}</p></div>"
         )
     technicians = technician_store.list_all(organization_id)
+    pending_password_reset = _last_password_reset.pop(organization_id, None)
+    if pending_password_reset is None:
+        password_reset_result_html = ""
+    else:
+        password_reset_result_html = (
+            "<div class='ai-panel'><p><b>Senha temporária gerada para "
+            f"{escape(pending_password_reset['technician_name'])} "
+            f"({escape(pending_password_reset['technician_username'])})</b></p>"
+            f"<p>Repasse esta senha ao técnico agora — ela só aparece aqui uma vez: "
+            f"<code style='font-size:1.1em;font-weight:bold'>{escape(pending_password_reset['temporary_password'])}</code></p>"
+            "<p><small>O técnico será obrigado a trocá-la assim que entrar de novo.</small></p></div>"
+        )
     integration_config_store.ensure_unconfigured(organization_id)
     mkauth_settings = get_integration_settings(organization_id)
     active_technicians = [item for item in technicians if item["active"]]
@@ -497,6 +510,9 @@ async def central_dashboard(
             f"<input type='hidden' name='active' value='{'0' if item['active'] else '1'}'>"
             f"<button class='{'secondary' if item['active'] else ''}' type='submit'>"
             f"{'DESATIVAR' if item['active'] else 'ATIVAR'}</button></form>"
+            f"<form method='post' action='/central/technicians/{escape(item['id'])}/reset-password' "
+            "onsubmit=\"return confirm('Gerar uma nova senha temporária para este técnico? A senha atual deixa de funcionar imediatamente.')\">"
+            "<button class='secondary' type='submit'>RESETAR SENHA</button></form>"
             if can_manage_technicians
             else "-"
         )
@@ -961,6 +977,7 @@ async def central_dashboard(
       </section>
       <section class="module-panel" data-module="technicians">
         <h2>Técnicos</h2>
+        {password_reset_result_html}
         {technician_form}
         <table><thead><tr><th>Nome</th><th>Usuário</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{technician_rows}</tbody></table>
       </section>
@@ -3122,6 +3139,41 @@ async def central_update_work_order_planning(
         }
     )
     return RedirectResponse("/central", status_code=303)
+
+
+@router.post(
+    "/central/technicians/{technician_id}/reset-password", include_in_schema=False
+)
+async def central_reset_technician_password(
+    technician_id: str,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    technicians = technician_store.list_all(organization_id)
+    target = next(
+        (item for item in technicians if item["id"] == technician_id), None
+    )
+    if target is None:
+        raise HTTPException(404, "technician_not_found")
+    try:
+        temporary_password = technician_store.reset_password(
+            technician_id, organization_id
+        )
+    except KeyError as error:
+        raise HTTPException(404, "technician_not_found") from error
+    _last_password_reset[organization_id] = {
+        "technician_name": target["name"],
+        "technician_username": target["username"],
+        "temporary_password": temporary_password,
+    }
+    audit_store.record(
+        organization_id,
+        session["user"],
+        "technician_password_reset",
+        f"technician:{technician_id}",
+        {"technician_username": target["username"]},
+    )
+    return RedirectResponse("/central#technicians", status_code=303)
 
 
 @router.post("/central/technicians/{technician_id}/toggle", include_in_schema=False)

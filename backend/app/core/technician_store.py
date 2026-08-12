@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import secrets
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
@@ -41,6 +42,11 @@ class TechnicianStore:
             }
             if "organization_id" not in columns:
                 self._migrate_to_organizations(connection)
+            if "must_change_password" not in columns:
+                connection.execute(
+                    "ALTER TABLE technicians ADD COLUMN must_change_password "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
         settings = get_settings()
         if settings.technician_username and settings.technician_password:
             self.create_if_missing(
@@ -131,7 +137,8 @@ class TechnicianStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, organization_id, name, username, password_hash, active
+                SELECT id, organization_id, name, username, password_hash, active,
+                    must_change_password
                 FROM technicians
                 WHERE organization_id = ? AND username = ?
                 """,
@@ -144,6 +151,7 @@ class TechnicianStore:
             "organization_id": row["organization_id"],
             "name": row["name"],
             "username": row["username"],
+            "must_change_password": bool(row["must_change_password"]),
         }
 
     def get_active(
@@ -249,7 +257,7 @@ class TechnicianStore:
                 raise ValueError("current_password_incorrect")
             connection.execute(
                 """
-                UPDATE technicians SET password_hash = ?
+                UPDATE technicians SET password_hash = ?, must_change_password = 0
                 WHERE id = ? AND organization_id = ?
                 """,
                 (
@@ -258,6 +266,32 @@ class TechnicianStore:
                     current_organization_id,
                 ),
             )
+
+    def reset_password(
+        self, technician_id: str, organization_id: str | None = None
+    ) -> str:
+        """Recuperação de acesso: o dono/admin gera uma senha temporária
+        nova para o técnico (ex.: esqueceu a senha, trocou de aparelho).
+        A senha só é exibida uma vez, na tela do admin — o técnico é
+        obrigado a trocá-la assim que fizer login de novo."""
+        current_organization_id = organization_id or get_settings().default_organization_id
+        temporary_password = secrets.token_urlsafe(9)
+        with self._connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE technicians
+                SET password_hash = ?, must_change_password = 1
+                WHERE id = ? AND organization_id = ? AND active = 1
+                """,
+                (
+                    self._hash_password(temporary_password),
+                    technician_id,
+                    current_organization_id,
+                ),
+            )
+        if updated.rowcount == 0:
+            raise KeyError("technician_not_found")
+        return temporary_password
 
     def delete(self, technician_id: str, organization_id: str | None = None) -> None:
         current_organization_id = organization_id or get_settings().default_organization_id

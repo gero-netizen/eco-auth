@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/auth/technician_session.dart';
 import '../core/config/server_config.dart';
 import '../features/auth/presentation/technician_login_page.dart';
+import '../features/settings/presentation/change_password_page.dart';
 import '../features/work_orders/data/work_order_repository.dart';
 import '../features/work_orders/presentation/work_order_list_page.dart';
 
@@ -18,6 +19,7 @@ class IspFieldApp extends StatefulWidget {
 class _IspFieldAppState extends State<IspFieldApp> {
   bool _entered = false;
   bool _restoringSession = true;
+  bool _mustChangePassword = false;
 
   @override
   void initState() {
@@ -55,18 +57,28 @@ class _IspFieldAppState extends State<IspFieldApp> {
       home: _restoringSession
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : widget.workOrderRepository != null || _entered
-              ? WorkOrderListPage(
-                  repository: widget.workOrderRepository,
-                  onLogout: _logout,
-                )
+              ? _mustChangePassword
+                  ? ChangePasswordPage(
+                      forced: true,
+                      onChanged: () =>
+                          setState(() => _mustChangePassword = false),
+                    )
+                  : WorkOrderListPage(
+                      repository: widget.workOrderRepository,
+                      onLogout: _logout,
+                    )
               : TechnicianLoginPage(
-                  onAuthenticated: (token, technicianId, username) async {
+                  onAuthenticated:
+                      (token, technicianId, username, mustChangePassword) async {
                     await TechnicianSession.save(
                       token, technicianId,
                       username: username,
                     );
                     if (!mounted) return;
-                    setState(() => _entered = true);
+                    setState(() {
+                      _entered = true;
+                      _mustChangePassword = mustChangePassword;
+                    });
                   },
                   onOffline: () => setState(() => _entered = true),
                 ),

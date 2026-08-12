@@ -5,7 +5,15 @@ import '../../../core/auth/technician_session.dart';
 import '../../../core/config/server_config.dart';
 
 class ChangePasswordPage extends StatefulWidget {
-  const ChangePasswordPage({super.key});
+  const ChangePasswordPage({super.key, this.forced = false, this.onChanged});
+
+  /// Quando true (senha temporária vinda de um reset do admin), a tela não
+  /// pode ser fechada sem trocar a senha — sem botão de voltar, sem escapar.
+  final bool forced;
+
+  /// Chamado ao trocar com sucesso, no lugar de simplesmente fechar a tela
+  /// (usado no fluxo obrigatório, onde não há para onde "voltar" ainda).
+  final VoidCallback? onChanged;
 
   @override
   State<ChangePasswordPage> createState() => _ChangePasswordPageState();
@@ -53,7 +61,11 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Senha alterada com sucesso.')),
         );
-        Navigator.of(context).pop();
+        if (widget.forced) {
+          widget.onChanged?.call();
+        } else {
+          Navigator.of(context).pop();
+        }
       }
     } on DioException catch (error) {
       setState(() => _error = error.response?.statusCode == 422
@@ -68,50 +80,70 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Trocar senha')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              controller: _currentPassword,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Senha atual',
-                border: OutlineInputBorder(),
+    return PopScope(
+      canPop: !widget.forced,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Trocar senha'),
+          automaticallyImplyLeading: !widget.forced,
+        ),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (widget.forced) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'Sua senha foi redefinida pela central. Defina uma nova '
+                    'senha para continuar.',
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+              TextField(
+                controller: _currentPassword,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: widget.forced ? 'Senha temporária' : 'Senha atual',
+                  border: const OutlineInputBorder(),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _newPassword,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'Nova senha (mínimo 8 caracteres)',
-                border: OutlineInputBorder(),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _newPassword,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Nova senha (mínimo 8 caracteres)',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _confirmPassword,
-              obscureText: true,
-              onSubmitted: (_) => _submit(),
-              decoration: const InputDecoration(
-                labelText: 'Confirmar nova senha',
-                border: OutlineInputBorder(),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _confirmPassword,
+                obscureText: true,
+                onSubmitted: (_) => _submit(),
+                decoration: const InputDecoration(
+                  labelText: 'Confirmar nova senha',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              ],
+              const SizedBox(height: 24),
+              FilledButton(
+                onPressed: _saving ? null : _submit,
+                child: Text(_saving ? 'SALVANDO...' : 'SALVAR NOVA SENHA'),
+              ),
             ],
-            const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _saving ? null : _submit,
-              child: Text(_saving ? 'SALVANDO...' : 'SALVAR NOVA SENHA'),
-            ),
-          ],
+          ),
         ),
       ),
     );
