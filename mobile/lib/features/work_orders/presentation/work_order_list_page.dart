@@ -58,7 +58,7 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
   final _notificationStore = const AssignmentNotificationStore();
   List<AssignmentNotification> _notifications = const [];
   String? _error;
-  _OrderFilter _filter = _OrderFilter.all;
+  _OrderFilter _filter = _OrderFilter.pending;
 
   bool _isFinished(WorkOrder order) =>
       order.status == WorkOrderStatus.completed ||
@@ -164,7 +164,10 @@ class _WorkOrderListPageState extends State<WorkOrderListPage> {
     try {
       final orders = await _repository.synchronize();
       final newlyAssigned = orders
-          .where((order) => !_knownOrderIds.contains(order.id))
+          .where(
+            (order) =>
+                !_knownOrderIds.contains(order.id) && !_isFinished(order),
+          )
           .map((order) => order.id)
           .toSet();
       for (final order in orders.where(
