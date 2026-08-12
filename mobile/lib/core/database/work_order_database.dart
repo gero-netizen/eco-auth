@@ -376,6 +376,33 @@ class WorkOrderDatabase extends _$WorkOrderDatabase {
     );
   }
 
+  /// Evidências já confirmadas no servidor, da mais antiga para a mais
+  /// nova — usado para liberar espaço local sem nunca apagar algo que
+  /// ainda não foi sincronizado.
+  Future<List<LocalEvidence>> uploadedEvidenceOrderedByAge() async {
+    final rows = await (select(evidenceEntries)
+          ..where((row) => row.state.equals('uploaded'))
+          ..orderBy([(row) => OrderingTerm.asc(row.createdAt)]))
+        .get();
+    return rows
+        .map(
+          (row) => LocalEvidence(
+            id: row.id,
+            workOrderId: row.workOrderId,
+            category: row.category,
+            localPath: row.localPath,
+            sha256: row.sha256,
+            state: row.state,
+            createdAt: row.createdAt,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<void> deleteEvidenceRecord(String id) {
+    return (delete(evidenceEntries)..where((row) => row.id.equals(id))).go();
+  }
+
   Future<void> addEquipmentScan({
     required String id,
     required String workOrderId,

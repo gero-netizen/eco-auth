@@ -9,6 +9,7 @@ import '../../provisioning/domain/onu_state.dart';
 import '../../monitoring/domain/network_alert.dart';
 import '../../access_test/domain/pppoe_test_result.dart';
 import '../../feasibility/domain/feasibility_result.dart';
+import '../../../core/storage/storage_cleanup_service.dart';
 import 'work_order_local_data_source.dart';
 import 'work_order_remote_data_source.dart';
 
@@ -61,6 +62,8 @@ class WorkOrderRepository implements WorkOrderRepositoryContract {
   final WorkOrderLocalDataSource _local;
   final WorkOrderRemoteDataSource _remote;
   final EvidenceFileStore _fileStore = EvidenceFileStore();
+  late final StorageCleanupService _storageCleanup =
+      StorageCleanupService(_local);
 
   @override
   Future<List<WorkOrder>> loadCached() => _local.fetchAll();
@@ -94,6 +97,7 @@ class WorkOrderRepository implements WorkOrderRepositoryContract {
     }
 
     await _uploadPendingEvidence();
+    await _storageCleanup.enforceLimit();
 
     final cursor = await _local.readSyncCursor();
     if (cursor == null) {

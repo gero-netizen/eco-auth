@@ -79,6 +79,12 @@ class WorkOrderLocalDataSource {
   Future<void> setEvidenceState(String id, String state) =>
       _database.setEvidenceState(id, state);
 
+  Future<List<LocalEvidence>> uploadedEvidenceOrderedByAge() =>
+      _database.uploadedEvidenceOrderedByAge();
+
+  Future<void> deleteEvidenceRecord(String id) =>
+      _database.deleteEvidenceRecord(id);
+
   Future<List<LocalEquipmentScan>> pendingEquipmentScans() =>
       _database.pendingEquipmentScans();
 
