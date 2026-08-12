@@ -1383,7 +1383,7 @@ async def central_dashboard(
           inactiveStatus.textContent = `${{inactiveClients.length}} cliente(s) desativado(s) • somente leitura`;
           const clientSelect = document.getElementById('mkauth-client-select');
           clientSelect.replaceChildren(new Option('Cliente manual/fictício', ''));
-          data.clients.forEach((client, index) => {{
+          mkauthClientsCache.forEach((client, index) => {{
             clientSelect.add(new Option(`${{client.name}} • ${{client.login}}`, String(index)));
           }});
           mkauthClientsLoaded = true;
