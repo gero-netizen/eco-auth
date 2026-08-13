@@ -1,3 +1,4 @@
+import asyncio
 from html import escape
 from urllib.parse import parse_qs
 from uuid import uuid4
@@ -37,6 +38,7 @@ from app.integrations.mercado_pago.client import (
     MercadoPagoUnavailableError,
     mercado_pago_client,
 )
+from app.integrations.routeros.client import RouterOsReadOnlyClient
 
 router = APIRouter(tags=["simulated-client-portal"])
 _customer_id = "sim-customer-1"
@@ -241,24 +243,71 @@ def _work_order_label(value: str) -> str:
     }.get(value, "Aguardando atualização")
 
 
-async def _mkauth_titles_panel(
-    organization_id: str, customer: dict, portal_path: str
-) -> str:
-    login = str(customer.get("external_login") or "").strip()
-    customer_uuid = str(customer.get("external_customer_id") or "").strip()
-    if not login or not customer_uuid:
-        return (
-            "<section><h2>Meus títulos</h2>"
-            "<p>Seu acesso ainda não foi vinculado ao cadastro do provedor.</p>"
-            "</section>"
-        )
+async def _fetch_client_details(organization_id: str, login: str) -> dict | None:
+    """Dados reais do cadastro do cliente no MK-AUTH (nome, plano, status,
+    ONU, porta OLT). Retorna None se não for possível consultar."""
     settings = get_integration_settings(organization_id)
     if settings.mkauth_mode != "real":
-        return (
-            "<section><h2>Meus títulos</h2>"
-            "<p>A consulta ao sistema financeiro ainda não está disponível.</p>"
-            "</section>"
+        return None
+    try:
+        client = MkAuthApiClient(
+            settings.mkauth_base_url,
+            settings.mkauth_client_id,
+            settings.mkauth_client_secret,
+            settings.mkauth_verify_ssl,
+            settings.mkauth_allow_http and settings.app_env == "development",
         )
+        item = await client.get_client_details(login)
+    except (ValueError, httpx.HTTPError):
+        return None
+    return {
+        "name": str(item.get("nome") or item.get("nome_res") or "-"),
+        "login": str(item.get("login") or login),
+        "connection_type": str(item.get("tipo") or "-"),
+        "plan": str(item.get("plano") or "-"),
+        "activated": str(item.get("cli_ativado") or "-").strip().casefold()
+        in {"s", "sim", "1", "true", "ativo"},
+        "blocked": str(item.get("bloqueado") or "-").strip().casefold()
+        in {"s", "sim", "1", "true", "bloq", "bloqueado"},
+        "ip": str(item.get("ip") or item.get("user_ip") or "-"),
+        "onu_ont": str(item.get("onu_ont") or "-"),
+        "olt_port": str(item.get("porta_olt") or "-"),
+        "address": str(item.get("endereco") or item.get("endereco_completo") or "-"),
+    }
+
+
+async def _fetch_active_session(organization_id: str, login: str) -> dict | None:
+    """Sessão PPPoE real e ativa deste cliente no MikroTik (IP, tempo
+    conectado). Retorna None se o cliente não estiver online agora, ou se
+    a integração não estiver em modo real."""
+    settings = get_integration_settings(organization_id)
+    if settings.routeros_mode != "real" or not settings.routeros_username:
+        return None
+    try:
+        client = RouterOsReadOnlyClient(
+            settings.routeros_host,
+            settings.routeros_port,
+            settings.routeros_username,
+            settings.routeros_password,
+        )
+        diagnostic = await asyncio.to_thread(client.diagnose)
+    except Exception:
+        return None
+    for session in diagnostic.get("sessions", []):
+        if str(session.get("username") or "").strip().casefold() == login.casefold():
+            return session
+    return None
+
+
+async def _fetch_customer_titles(
+    organization_id: str, login: str
+) -> tuple[str, list[dict]]:
+    """Busca os títulos reais do cliente no MK-AUTH, já filtrados (só os
+    dele mesmo, nunca de outro login) e ordenados (vencidos primeiro).
+    Retorna (status, títulos) — status é 'not_configured', 'error' ou 'ok'."""
+    settings = get_integration_settings(organization_id)
+    if settings.mkauth_mode != "real":
+        return "not_configured", []
     try:
         client = MkAuthApiClient(
             settings.mkauth_base_url,
@@ -269,11 +318,7 @@ async def _mkauth_titles_panel(
         )
         raw_titles = await client.list_payable_titles(login)
     except (ValueError, httpx.HTTPError):
-        return (
-            "<section><h2>Meus títulos</h2>"
-            "<p>Não foi possível consultar seus títulos agora. Tente novamente mais tarde.</p>"
-            "</section>"
-        )
+        return "error", []
     safe_titles = [
         item
         for item in raw_titles
@@ -288,6 +333,33 @@ async def _mkauth_titles_panel(
             str(item.get("datavenc") or item.get("vencimento") or "9999-12-31"),
         )
     )
+    return "ok", safe_titles
+
+
+async def _mkauth_titles_panel(
+    organization_id: str, customer: dict, portal_path: str
+) -> str:
+    login = str(customer.get("external_login") or "").strip()
+    customer_uuid = str(customer.get("external_customer_id") or "").strip()
+    if not login or not customer_uuid:
+        return (
+            "<section><h2>Meus títulos</h2>"
+            "<p>Seu acesso ainda não foi vinculado ao cadastro do provedor.</p>"
+            "</section>"
+        )
+    status, safe_titles = await _fetch_customer_titles(organization_id, login)
+    if status == "not_configured":
+        return (
+            "<section><h2>Meus títulos</h2>"
+            "<p>A consulta ao sistema financeiro ainda não está disponível.</p>"
+            "</section>"
+        )
+    if status == "error":
+        return (
+            "<section><h2>Meus títulos</h2>"
+            "<p>Não foi possível consultar seus títulos agora. Tente novamente mais tarde.</p>"
+            "</section>"
+        )
     mp_config = mercado_pago_config_store.get(organization_id)
     pix_available = mp_config.enabled and bool(mp_config.access_token)
     rows = "".join(
@@ -323,39 +395,80 @@ async def client_portal(
     customer = _authenticated_customer(request, organization, organization_slug)
     organization_id = organization["id"]
     primary_color = _primary_color(organization)
-    support_contact = _support_contact(organization)
-    mkauth_titles_panel = await _mkauth_titles_panel(organization_id, customer, portal_path)
-    account = ensure_simulated_account(
-        organization_id,
-        organization["name"],
-        customer["id"],
+    login = str(customer.get("external_login") or "").strip()
+    first_name = escape(str(customer.get("name") or "Cliente").split(" ")[0])
+    full_name = escape(str(customer.get("name") or "Cliente"))
+
+    # ---------- Dados reais: MK-AUTH, MikroTik, títulos ----------
+    client_details = await _fetch_client_details(organization_id, login) if login else None
+    active_session = await _fetch_active_session(organization_id, login) if login else None
+    titles_status, titles = (
+        await _fetch_customer_titles(organization_id, login) if login else ("not_configured", [])
     )
-    access_status = escape(_label(account["access_status"]))
-    invoice_status = escape(_label(account["invoice_status"]))
-    trust_message = (
-        f"Liberação válida até {escape(account['trust_until'])}"
-        if account.get("trust_until") else "Disponível somente para este teste de bancada."
+    account = ensure_simulated_account(organization_id, organization["name"], customer["id"])
+    mp_config = mercado_pago_config_store.get(organization_id)
+    pix_available = mp_config.enabled and bool(mp_config.access_token)
+
+    # ---------- Status da conexão ----------
+    bench_status_label = None
+    if active_session is not None:
+        connection_online = True
+        connection_source = "MikroTik (tempo real)"
+        connection_ip = escape(str(active_session.get("address") or "-"))
+        connection_uptime = escape(str(active_session.get("uptime") or "-"))
+    elif client_details is not None:
+        connection_online = client_details["activated"] and not client_details["blocked"]
+        connection_source = "Cadastro MK-AUTH"
+        connection_ip = escape(client_details["ip"])
+        connection_uptime = "-"
+    else:
+        connection_online = account["access_status"] == "active"
+        connection_source = "Bancada (simulado)"
+        connection_ip = "-"
+        connection_uptime = "-"
+        bench_status_label = escape(_label(account["access_status"]))
+    plan_name = escape(
+        client_details["plan"] if client_details and client_details["plan"] != "-"
+        else "Plano não identificado"
     )
-    requests = list_support_requests(customer["id"], organization_id)
+
+    # ---------- Próxima fatura ----------
+    open_titles = [
+        item for item in titles
+        if str(item.get("status") or "").strip().casefold() not in {"pago", "liquidado", "recebido", "baixado"}
+    ]
+    next_title = open_titles[0] if open_titles else None
+    if next_title is not None:
+        invoice_amount = escape(str(next_title.get("valor") or "0,00"))
+        invoice_due = escape(str(next_title.get("datavenc") or next_title.get("vencimento") or "-"))
+        invoice_status_label = escape(_label(str(next_title.get("status") or "-").strip().casefold()))
+        title_uuid = str(next_title.get("uuid") or "")
+        can_pay_pix = pix_available and bool(title_uuid)
+    else:
+        invoice_amount = f"{account['invoice_amount']:.2f}"
+        invoice_due = "-"
+        invoice_status_label = escape(_label(account["invoice_status"]))
+        title_uuid = ""
+        can_pay_pix = False
+
+    # ---------- Avisos de rede ----------
     alerts = list_active_alerts(organization_id)
-    network_notice = (
-        "".join(
-            f"<div class='network-alert'><b>{escape(alert.title)}</b><br>"
-            f"Área afetada: {escape(alert.area)}<br>"
-            f"<small>Nossa equipe já foi informada. Evite abrir chamados duplicados.</small></div>"
-            for alert in alerts
-        )
-        if alerts else
-        "<div class='network-ok'><b>Rede sem ocorrências gerais comunicadas.</b></div>"
+    all_systems_ok = not alerts
+    notice_html = "".join(
+        f"<div class='notice-banner'><i data-lucide='alert-triangle'></i>"
+        f"<p><span>{escape(alert.title)}</span> — área afetada: {escape(alert.area)}. "
+        "Nossa equipe já foi avisada, não é preciso abrir chamado para isso.</p></div>"
+        for alert in alerts
     )
+
+    # ---------- Chamados ----------
+    requests = list_support_requests(customer["id"], organization_id)
     orders = {
         order.id: order
-        for order in await simulated_mkauth_gateway.list_work_orders(
-            "bench-technician", organization_id
-        )
+        for order in await simulated_mkauth_gateway.list_work_orders("bench-technician", organization_id)
     }
-    rows = []
-    for item in requests[:5]:
+    ticket_rows = []
+    for item in requests[:8]:
         order = orders.get(item["work_order_id"])
         if order is not None:
             status = f"{order.code} • {_work_order_label(order.status.value)}"
@@ -364,40 +477,306 @@ async def client_portal(
         elif item["status"] == "answered":
             status = "Respondido pela equipe"
         else:
-            status = "Chamado recebido — aguardando a central"
-        rows.append(
-            f"<tr><td>#{item['id']}</td><td>{escape(item['subject'])}</td>"
-            f"<td><a class='ticket-status' href='{portal_path}/chamados/{item['id']}'>{escape(status)}</a></td></tr>"
+            status = "Recebido — aguardando a central"
+        ticket_rows.append(
+            f"<li class='ticket-row'><div><p class='ticket-subject'>#{item['id']} — {escape(item['subject'])}</p>"
+            f"<p class='ticket-meta'>Ver detalhes</p></div>"
+            f"<a class='ticket-badge' href='{portal_path}/chamados/{item['id']}'>{escape(status)}</a></li>"
         )
-    request_rows = "".join(rows) or "<tr><td colspan='3'>Nenhum chamado aberto.</td></tr>"
-    logout_form = (
-        f'<form method="post" action="{portal_path}/logout">'
-        '<button type="submit">SAIR</button></form>'
-        if organization_slug is not None
-        else ""
+    ticket_list_html = "".join(ticket_rows) or "<li class='ticket-empty'>Nenhum chamado aberto ainda.</li>"
+
+    # ---------- Suporte via WhatsApp ----------
+    support_phone = str(organization.get("support_phone") or "").strip()
+    whatsapp_digits = "".join(ch for ch in support_phone if ch.isdigit())
+    whatsapp_href = f"https://wa.me/{whatsapp_digits}" if whatsapp_digits else "#"
+
+    logout_action = f"{portal_path}/logout" if organization_slug is not None else None
+
+    trust_unlock_block = (
+        f"""<form method="post" action="{portal_path}/desbloqueio-confianca" id="trust-unlock-form">
+          <button type="submit" class="btn-primary-outline w-full">Confirmar liberação por 48h</button>
+        </form>"""
+        if organization_slug is not None else
+        "<p class='text-xs text-faint'>Disponível apenas para clientes com acesso ao portal (fora do modo de bancada).</p>"
     )
+
+    pix_action_html = (
+        f"<form method='post' action='{portal_path}/financeiro/{escape(title_uuid)}/pix'>"
+        "<button type='submit' class='btn-pix w-full'><i data-lucide=\"qr-code\"></i> Pagar com PIX</button></form>"
+        if can_pay_pix else
+        "<button class='btn-pix w-full' disabled title='Pix real não configurado para este provedor'>"
+        "<i data-lucide=\"qr-code\"></i> Pagar com PIX</button>"
+    )
+
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Portal do Cliente</title>
-<style>:root{{--green:#075e54;--mint:#d8f3ee;--ink:#17332f}}*{{box-sizing:border-box}}body{{margin:0;background:#f3f8f7;color:var(--ink);font:16px system-ui,sans-serif}}header{{background:var(--green);color:white;padding:24px 5vw}}header h1{{margin:0}}main{{width:min(720px,92vw);margin:24px auto}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:13px;border-radius:8px}}.network-alert{{background:#ffe1d5;border-left:5px solid #d34a21;padding:15px;border-radius:8px;margin:16px 0}}.network-ok{{background:#dff5ea;border-left:5px solid #16845f;padding:15px;border-radius:8px;margin:16px 0}}section{{background:white;border-radius:14px;padding:20px;margin:16px 0;box-shadow:0 2px 10px #17332f18}}.status{{display:inline-block;background:var(--mint);color:var(--green);padding:7px 11px;border-radius:999px;font-weight:bold}}.ticket-status{{display:inline-block;border-left:4px solid var(--green);padding:7px 9px;background:#edf7f4;color:var(--green);text-decoration:none;font-weight:600}}.ticket-status:hover{{text-decoration:underline}}.amount{{font-size:36px;font-weight:bold;margin:8px 0}}.actions{{display:flex;flex-wrap:wrap;gap:10px}}form{{margin:0}}button{{border:0;border-radius:9px;padding:12px 15px;background:var(--green);color:white;font:inherit;font-weight:bold;cursor:pointer}}button.secondary{{background:#d78200}}button.reset{{background:#647773}}input,textarea{{width:100%;border:1px solid #aac0bb;border-radius:8px;padding:10px;font:inherit}}textarea{{min-height:90px;resize:vertical}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid #dce8e5;text-align:left}}code{{display:block;padding:12px;background:#edf3f1;border-radius:8px;overflow-wrap:anywhere}}small{{color:#627773}}</style></head>
-<body><style>:root{{--green:{primary_color}}}</style><header><h1>{escape(organization['name'])}</h1><div>Portal do Cliente — {escape(customer['name'])}</div>{support_contact}</header><main>
-{logout_form}
-<p class="simulation">As ações de pagamento e desbloqueio nesta página seguem a configuração real deste provedor.</p>
-{network_notice}
-{mkauth_titles_panel}
-<section><h2>Minha conexão</h2><p class="status">{access_status}</p><p>{trust_message}</p></section>
-<section><h2>Minha fatura</h2><div class="amount">R$ {account['invoice_amount']:.2f}</div><p>Situação: <b>{invoice_status}</b></p>
-<p>Código Pix exclusivamente fictício:</p><code>PIX-SIMULADO-{escape(account['invoice_id'].upper())}-NAO-PAGAR</code></section>
-<section><h2>Serviços disponíveis</h2><div class="actions">
-<form method="post" action="{portal_path}/desbloqueio-confianca"><button class="secondary" type="submit">Liberar por 48 horas</button></form>
-<form method="post" action="{portal_path}/simular-pix"><button type="submit">Simular pagamento Pix</button></form>
-<form method="post" action="{portal_path}/reiniciar"><button class="reset" type="submit">Reiniciar simulação</button></form>
-</div><p><small>Na integração real, as regras e permissões serão consultadas no MK-AUTH antes de qualquer ação.</small></p></section>
-<section><h2>Solicitar suporte</h2><form method="post" action="{portal_path}/chamados">
-<p><label>Assunto<br><input name="subject" minlength="3" maxlength="100" required placeholder="Ex.: Internet sem conexão"></label></p>
-<p><label>Descrição<br><textarea name="description" minlength="5" maxlength="500" required placeholder="Descreva o problema encontrado"></textarea></label></p>
-<button type="submit">ABRIR CHAMADO</button></form>
-<h3>Acompanhe meus chamados</h3><p><a class="ticket-status" href="{portal_path}">ATUALIZAR ANDAMENTO</a></p><table><thead><tr><th>Número</th><th>Assunto</th><th>Andamento</th></tr></thead><tbody>{request_rows}</tbody></table></section>
-</main></body></html>"""
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{escape(organization['name'])} • Central do Cliente</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script>
+  tailwind.config = {{ theme: {{ extend: {{
+    colors: {{ bg:'#0B1220', surface:'#141D33', surface2:'#1B2743', border:'#26314F', ink:'#F1F5F9', muted:'#94A3B8', faint:'#5D6B8A',
+      blue: {{ DEFAULT:'{primary_color}', dark:'{primary_color}', soft:'#DBEAFE' }}, green: {{ DEFAULT:'#22C55E' }} }},
+    fontFamily: {{ sans: ['Inter','sans-serif'] }} }} }} }};
+</script>
+<style>
+  body{{background:#0B1220}} ::-webkit-scrollbar{{width:10px}} ::-webkit-scrollbar-thumb{{background:#26314F;border-radius:999px}}
+  .tab-panel{{display:none}} .tab-panel.active{{display:block;animation:fade-in .2s ease}}
+  @keyframes fade-in{{from{{opacity:0;transform:translateY(4px)}}to{{opacity:1;transform:translateY(0)}}}}
+  .nav-item[aria-current="page"]{{background:{primary_color};color:white}} .nav-item:not([aria-current="page"]):hover{{background:#1B2743}}
+  .notice-banner{{display:flex;gap:12px;align-items:flex-start;background:#DBEAFE;color:#1e293b;border-radius:16px;padding:16px 20px;margin-bottom:12px}}
+  .notice-banner i{{width:18px;height:18px;color:{primary_color};flex-shrink:0;margin-top:2px}}
+  .notice-ok{{display:flex;gap:10px;align-items:center;background:#141D33;border:1px solid #26314F;border-radius:16px;padding:14px 20px;margin-bottom:20px;color:#94A3B8;font-size:14px}}
+  .card{{border-radius:16px;border:1px solid #26314F;background:#141D33;padding:24px;box-shadow:0 12px 30px -18px rgba(0,0,0,.6)}}
+  .btn-primary{{background:{primary_color};color:white;font-weight:600;border-radius:12px;padding:11px 16px;border:0;cursor:pointer;font-size:14px}}
+  .btn-primary-outline{{border:1px solid {primary_color}66;color:{primary_color};background:transparent;font-weight:600;border-radius:12px;padding:11px 16px;cursor:pointer;font-size:14px}}
+  .btn-pix{{background:#22C55E;color:white;font-weight:600;border-radius:12px;padding:11px 16px;border:0;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;gap:8px}}
+  .btn-pix:disabled{{opacity:.5;cursor:not-allowed}}
+  .btn-secondary{{border:1px solid #26314F;background:transparent;color:#F1F5F9;font-weight:500;border-radius:12px;padding:11px 16px;cursor:pointer;font-size:14px}}
+  .estimate-badge{{font-size:10px;font-weight:600;background:#F5A62333;color:#F5A623;padding:2px 8px;border-radius:999px;margin-left:6px;vertical-align:middle}}
+  .ticket-row{{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid #26314F}}
+  .ticket-row:last-child{{border-bottom:0}} .ticket-subject{{font-size:14px;margin:0}} .ticket-meta{{font-size:11px;color:#5D6B8A;margin:2px 0 0}}
+  .ticket-badge{{font-size:11px;font-weight:600;background:#F5A62326;color:#F5A623;padding:5px 10px;border-radius:999px;text-decoration:none;white-space:nowrap}}
+  .ticket-empty{{color:#5D6B8A;font-size:14px;padding:12px 0}}
+  input,textarea,select{{background:#1B2743;border:1px solid #26314F;border-radius:10px;padding:10px 12px;font:inherit;color:#F1F5F9;width:100%}}
+  input::placeholder,textarea::placeholder{{color:#5D6B8A}}
+  @media (min-width:768px){{ #mobile-tabbar{{display:none}} }} @media (max-width:767px){{ #sidebar{{display:none}} }}
+</style>
+</head>
+<body class="bg-bg text-ink font-sans antialiased min-h-screen">
+<div class="flex min-h-screen">
+  <aside id="sidebar" class="w-64 shrink-0 bg-bg border-r border-border flex flex-col h-screen sticky top-0">
+    <div class="h-20 flex items-center gap-3 px-6">
+      <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style="background:{primary_color}"><i data-lucide="wifi" class="w-5 h-5 text-white"></i></div>
+      <div class="leading-tight"><p class="font-extrabold text-lg tracking-tight">{escape(organization['name'])}</p><p class="text-[10px] text-faint tracking-widest">CENTRAL DO CLIENTE</p></div>
+    </div>
+    <nav class="flex-1 px-4 pt-4 space-y-1.5">
+      <button class="nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted transition-colors" data-tab="inicio" aria-current="page"><i data-lucide="home" class="w-[18px] h-[18px]"></i> Início</button>
+      <button class="nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted transition-colors" data-tab="financeiro"><i data-lucide="dollar-sign" class="w-[18px] h-[18px]"></i> Faturas &amp; Financeiro</button>
+      <button class="nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted transition-colors" data-tab="rede"><i data-lucide="wifi" class="w-[18px] h-[18px]"></i> Minha Rede</button>
+      <button class="nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted transition-colors" data-tab="suporte"><i data-lucide="headphones" class="w-[18px] h-[18px]"></i> Suporte Técnico</button>
+      <button class="nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted transition-colors" data-tab="perfil"><i data-lucide="user" class="w-[18px] h-[18px]"></i> Contrato &amp; Perfil</button>
+    </nav>
+    <div class="p-4 border-t border-border">
+      <div class="flex items-center gap-3 px-2 py-2">
+        <div class="w-10 h-10 rounded-full bg-surface2 grid place-items-center shrink-0"><i data-lucide="user" class="w-5 h-5 text-muted"></i></div>
+        <div class="min-w-0"><p class="text-sm font-semibold truncate">{full_name}</p><p class="text-xs text-faint truncate">{escape(login or 'sem login vinculado')}</p></div>
+      </div>
+      {"<form method='post' action='" + logout_action + "' class='mt-3'><button type='submit' class='w-full flex items-center gap-2 px-2 py-2 rounded-lg text-sm text-red-400 hover:bg-surface2 transition-colors'><i data-lucide=\"log-out\" class=\"w-4 h-4\"></i> Sair</button></form>" if logout_action else ""}
+    </div>
+  </aside>
+
+  <div class="flex-1 min-w-0 pb-20 md:pb-0">
+    <main class="px-4 md:px-8 py-6 md:py-8 max-w-[1400px] mx-auto">
+      <div class="flex items-start justify-between gap-4 flex-wrap mb-6">
+        <div><h1 class="text-2xl font-bold">Olá, {first_name}! <span aria-hidden="true">👋</span></h1>
+        <p class="text-muted text-sm mt-1">Acompanhe sua conexão e seus serviços aqui.</p></div>
+        <span class="flex items-center gap-2 {'bg-green/10 border border-green/25 text-green' if all_systems_ok else 'bg-amber-500/10 border border-amber-500/25 text-amber-400'} text-sm font-medium px-4 py-2 rounded-full">
+          <span class="w-2 h-2 rounded-full {'bg-green' if all_systems_ok else 'bg-amber-400'}"></span> {'Rede sem ocorrências' if all_systems_ok else f'{len(alerts)} ocorrência(s) na sua região'}
+        </span>
+      </div>
+
+      <section id="tab-inicio" class="tab-panel active space-y-6">
+        {notice_html}
+        <div class="grid lg:grid-cols-3 gap-6">
+          <div class="card">
+            <div class="flex items-center justify-between mb-4"><h2 class="font-bold text-base">Status da Conexão</h2></div>
+            <span class="inline-flex items-center gap-2 {'bg-green/15 text-green' if connection_online else 'bg-red-500/15 text-red-400'} text-sm font-semibold px-4 py-2 rounded-full">
+              <span class="w-2 h-2 rounded-full {'bg-green' if connection_online else 'bg-red-400'}"></span> {'Online / Ativo' if connection_online else 'Offline / Inativo'}
+            </span>
+            <div class="mt-4"><p class="text-xs text-faint">IP {'(sessão ativa)' if active_session else '(último registrado)'}</p><p class="font-semibold text-sm mt-0.5">{connection_ip}</p></div>
+            <div class="mt-3"><p class="text-xs text-faint">Tempo conectado</p><p class="font-semibold text-sm mt-0.5">{connection_uptime}</p></div>
+            <div class="mt-3"><p class="text-xs text-faint">Plano contratado</p><p class="font-bold mt-0.5" style="color:{primary_color}">{plan_name}</p></div>
+            <p class="text-[11px] text-faint mt-4">Fonte: {connection_source}{f' • Situação simulada: {bench_status_label}' if bench_status_label else ''}</p>
+          </div>
+
+          <div class="card">
+            <div class="flex items-center justify-between mb-1"><h2 class="font-bold text-base">Consumo de Dados<span class="estimate-badge">ESTIMATIVA</span></h2></div>
+            <p class="text-xs text-faint mb-2">Ainda não coletamos tráfego em tempo real — os números abaixo são ilustrativos.</p>
+            <div class="h-44 mt-2"><canvas id="usageChart"></canvas></div>
+          </div>
+
+          <div class="card">
+            <h2 class="font-bold text-base mb-4">Próxima Fatura</h2>
+            <div class="flex items-center justify-between">
+              <div><p class="text-xs text-faint">Vencimento</p><p class="font-bold mt-0.5" style="color:{primary_color}">{invoice_due}</p></div>
+              <div class="text-right"><p class="text-xs text-faint">Situação</p><p class="font-bold text-lg mt-0.5">R$ {invoice_amount}</p></div>
+            </div>
+            <p class="text-xs text-faint mt-3">{invoice_status_label}</p>
+            <div class="mt-5">{pix_action_html}</div>
+          </div>
+        </div>
+
+        <div class="grid lg:grid-cols-3 gap-6">
+          <div class="card">
+            <div class="flex items-center justify-between mb-3"><h2 class="font-bold text-base">Desbloqueio em Confiança</h2></div>
+            <p class="text-sm text-muted mb-4">Em caso de atraso, você pode liberar sua conexão por 48 horas enquanto regulariza o pagamento. Sujeito às regras do seu provedor.</p>
+            {trust_unlock_block}
+          </div>
+          <div class="card">
+            <h2 class="font-bold text-base mb-4">Meus chamados</h2>
+            <ul>{ticket_list_html}</ul>
+            <button onclick="showTab('suporte')" class="btn-secondary w-full mt-4">Abrir novo chamado</button>
+          </div>
+          <div class="card">
+            <h2 class="font-bold text-base mb-4">Suporte rápido</h2>
+            <div class="space-y-2">
+              <a href="{whatsapp_href}" target="_blank" rel="noopener" class="flex items-center gap-3 rounded-xl bg-surface2 p-3 hover:bg-border transition-colors">
+                <div class="w-9 h-9 rounded-lg bg-green/15 grid place-items-center shrink-0"><i data-lucide="message-circle" class="w-[18px] h-[18px] text-green"></i></div>
+                <div><p class="text-sm font-medium">WhatsApp</p><p class="text-xs text-faint">Atendimento rápido</p></div>
+              </a>
+              <button onclick="showTab('suporte')" class="w-full flex items-center gap-3 rounded-xl bg-surface2 p-3 hover:bg-border transition-colors text-left">
+                <div class="w-9 h-9 rounded-lg bg-blue/15 grid place-items-center shrink-0"><i data-lucide="gauge" class="w-[18px] h-[18px]" style="color:{primary_color}"></i></div>
+                <div><p class="text-sm font-medium">Teste de velocidade</p><p class="text-xs text-faint">Versão estimada</p></div>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-financeiro" class="tab-panel space-y-6">
+        <div><h1 class="text-xl font-bold">Faturas &amp; Financeiro</h1><p class="text-sm text-muted mt-1">Histórico de cobranças reais consultado direto no MK-AUTH.</p></div>
+        <div class="card overflow-hidden !p-0">
+          <div class="divide-y divide-border">
+            {"".join(
+                f"<div class='flex items-center justify-between px-6 py-4'><div><p class='text-sm font-medium'>{escape(str(item.get('titulo') or item.get('numero') or '-'))}</p>"
+                f"<p class='text-xs text-faint mt-0.5'>Venc. {escape(str(item.get('datavenc') or item.get('vencimento') or '-'))}</p></div>"
+                f"<div class='flex items-center gap-3'><span class='ticket-badge'>{escape(_label(str(item.get('status') or '-').strip().casefold()))}</span>"
+                f"<span class='text-sm font-semibold'>R$ {escape(str(item.get('valor') or '0,00'))}</span></div></div>"
+                for item in titles
+            ) or "<p class='px-6 py-8 text-center text-sm text-faint'>" + (
+                (
+                    f"Cadastro de bancada — sem título real vinculado.<br>"
+                    f"Fatura simulada: R$ {account['invoice_amount']:.2f} "
+                    f"({escape(_label(account['invoice_status']))})<br>"
+                    f"Código Pix fictício: PIX-SIMULADO-{escape(account['invoice_id'].upper())}-NAO-PAGAR"
+                ) if titles_status == "not_configured" and not login
+                else "Consulta financeira real ainda não configurada para este provedor." if titles_status == "not_configured"
+                else "Não foi possível consultar seus títulos agora. Tente novamente mais tarde." if titles_status == "error"
+                else "Nenhum título em aberto."
+            ) + "</p>"}
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-rede" class="tab-panel space-y-6">
+        <div><h1 class="text-xl font-bold">Minha Rede</h1><p class="text-sm text-muted mt-1">Dados técnicos da sua conexão.</p></div>
+        <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div class="card !p-5"><i data-lucide="globe" class="w-4 h-4 mb-3" style="color:{primary_color}"></i><p class="text-xs text-faint">IP {'(sessão ativa)' if active_session else '(último registrado)'}</p><p class="font-semibold mt-1">{connection_ip}</p></div>
+          <div class="card !p-5"><i data-lucide="activity" class="w-4 h-4 mb-3" style="color:{primary_color}"></i><p class="text-xs text-faint">Consumo real (hoje)<span class="estimate-badge">ESTIMATIVA</span></p><p class="font-semibold mt-1">18,4 GB</p></div>
+          <div class="card !p-5"><i data-lucide="timer" class="w-4 h-4 mb-3" style="color:{primary_color}"></i><p class="text-xs text-faint">Ping<span class="estimate-badge">ESTIMATIVA</span></p><p class="font-semibold mt-1">11 ms</p></div>
+          <div class="card !p-5"><i data-lucide="waves" class="w-4 h-4 mb-3" style="color:{primary_color}"></i><p class="text-xs text-faint">Latência (jitter)<span class="estimate-badge">ESTIMATIVA</span></p><p class="font-semibold mt-1">1,8 ms</p></div>
+        </div>
+        <div class="card"><h2 class="font-bold text-base mb-1">Latência nas últimas 12 horas<span class="estimate-badge">ESTIMATIVA</span></h2>
+        <p class="text-xs text-faint mb-3">Coleta de latência em tempo real ainda não disponível — valores ilustrativos.</p>
+        <div class="h-44"><canvas id="pingChart"></canvas></div></div>
+      </section>
+
+      <section id="tab-suporte" class="tab-panel space-y-6">
+        <div><h1 class="text-xl font-bold">Suporte Técnico</h1><p class="text-sm text-muted mt-1">Teste sua conexão, abra um chamado ou fale com a gente.</p></div>
+        <div class="grid lg:grid-cols-3 gap-6">
+          <div class="card flex flex-col items-center text-center">
+            <h2 class="font-bold text-base self-start mb-2">Teste de velocidade<span class="estimate-badge">ESTIMATIVA</span></h2>
+            <div class="relative w-36 h-36 my-4 grid place-items-center">
+              <svg class="w-full h-full -rotate-90" viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" fill="none" stroke="#1B2743" stroke-width="10"/>
+              <circle id="speed-ring" cx="60" cy="60" r="52" fill="none" stroke="{primary_color}" stroke-width="10" stroke-linecap="round" stroke-dasharray="327" stroke-dashoffset="327"/></svg>
+              <div class="absolute"><p id="speed-value" class="text-2xl font-bold">0</p><p class="text-xs text-faint">Mbps</p></div>
+            </div>
+            <button id="btn-speedtest" onclick="runSpeedtest()" class="btn-primary w-full">Iniciar teste (estimativa)</button>
+          </div>
+          <div class="lg:col-span-2 card">
+            <h2 class="font-bold text-base mb-4">Abrir chamado</h2>
+            <form method="post" action="{portal_path}/chamados" class="space-y-3">
+              <input name="subject" minlength="3" maxlength="100" required placeholder="Assunto — ex.: Internet sem conexão">
+              <textarea name="description" minlength="5" maxlength="500" required placeholder="Descreva o problema encontrado" rows="3"></textarea>
+              <button type="submit" class="btn-primary">Abrir chamado</button>
+            </form>
+            <div class="mt-6 pt-6 border-t border-border">
+              <h3 class="text-sm font-medium text-muted mb-2">Seus chamados</h3>
+              <ul>{ticket_list_html}</ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-perfil" class="tab-panel space-y-6">
+        <div><h1 class="text-xl font-bold">Contrato &amp; Perfil</h1><p class="text-sm text-muted mt-1">Seus dados cadastrais e informações contratuais.</p></div>
+        <div class="grid lg:grid-cols-3 gap-6">
+          <div class="lg:col-span-2 card">
+            <h2 class="font-bold text-base mb-4">Dados do titular</h2>
+            <dl class="grid sm:grid-cols-2 gap-4 text-sm">
+              <div><dt class="text-xs text-faint">Nome completo</dt><dd class="mt-1">{full_name}</dd></div>
+              <div><dt class="text-xs text-faint">Login PPPoE</dt><dd class="mt-1">{escape(login or '-')}</dd></div>
+              <div><dt class="text-xs text-faint">Telefone</dt><dd class="mt-1">{escape(str(customer.get('phone') or '-'))}</dd></div>
+              <div class="sm:col-span-2"><dt class="text-xs text-faint">Endereço de instalação</dt><dd class="mt-1">{escape(client_details['address']) if client_details else 'Não disponível'}</dd></div>
+            </dl>
+          </div>
+          <div class="card">
+            <h2 class="font-bold text-base mb-4">Contrato</h2>
+            <dl class="space-y-3 text-sm">
+              <div class="flex justify-between"><dt class="text-faint">Plano</dt><dd>{plan_name}</dd></div>
+              <div class="flex justify-between"><dt class="text-faint">Tipo de conexão</dt><dd>{escape(client_details['connection_type']) if client_details else '-'}</dd></div>
+              <div class="flex justify-between"><dt class="text-faint">ONU/ONT</dt><dd>{escape(client_details['onu_ont']) if client_details else '-'}</dd></div>
+            </dl>
+          </div>
+        </div>
+      </section>
+
+      <footer class="text-center text-xs text-faint mt-10 pb-4">© {escape(organization['name'])}. Portal do cliente.</footer>
+    </main>
+  </div>
+</div>
+
+<nav id="mobile-tabbar" class="fixed bottom-0 inset-x-0 z-30 bg-surface/95 backdrop-blur border-t border-border grid grid-cols-5">
+  <button class="nav-item flex flex-col items-center justify-center gap-1 py-2.5 text-muted" data-tab="inicio" aria-current="page"><i data-lucide="home" class="w-5 h-5"></i><span class="text-[10px]">Início</span></button>
+  <button class="nav-item flex flex-col items-center justify-center gap-1 py-2.5 text-muted" data-tab="financeiro"><i data-lucide="dollar-sign" class="w-5 h-5"></i><span class="text-[10px]">Faturas</span></button>
+  <button class="nav-item flex flex-col items-center justify-center gap-1 py-2.5 text-muted" data-tab="rede"><i data-lucide="wifi" class="w-5 h-5"></i><span class="text-[10px]">Rede</span></button>
+  <button class="nav-item flex flex-col items-center justify-center gap-1 py-2.5 text-muted" data-tab="suporte"><i data-lucide="headphones" class="w-5 h-5"></i><span class="text-[10px]">Suporte</span></button>
+  <button class="nav-item flex flex-col items-center justify-center gap-1 py-2.5 text-muted" data-tab="perfil"><i data-lucide="user" class="w-5 h-5"></i><span class="text-[10px]">Perfil</span></button>
+</nav>
+
+<script>
+  lucide.createIcons();
+  function showTab(name) {{
+    document.querySelectorAll('.tab-panel').forEach(el => el.classList.toggle('active', el.id === 'tab-' + name));
+    document.querySelectorAll('.nav-item').forEach(btn => {{ if (btn.dataset.tab === name) btn.setAttribute('aria-current','page'); else btn.removeAttribute('aria-current'); }});
+    window.scrollTo({{top:0, behavior:'smooth'}});
+  }}
+  document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => showTab(btn.dataset.tab)));
+
+  function runSpeedtest() {{
+    const btn = document.getElementById('btn-speedtest'), ring = document.getElementById('speed-ring'), value = document.getElementById('speed-value');
+    const max = 600, circumference = 327; btn.disabled = true; btn.textContent = 'Testando...';
+    let current = 0; const target = 380 + Math.round(Math.random() * 120);
+    const step = setInterval(() => {{
+      current += (target - current) * 0.18 + 2;
+      if (current >= target) {{ current = target; clearInterval(step); btn.disabled = false; btn.textContent = 'Testar novamente (estimativa)'; }}
+      value.textContent = Math.round(current); ring.style.strokeDashoffset = circumference - (current / max) * circumference;
+    }}, 90);
+  }}
+
+  const usageCtx = document.getElementById('usageChart').getContext('2d');
+  const gradBlue = usageCtx.createLinearGradient(0,0,0,180); gradBlue.addColorStop(0,'{primary_color}59'); gradBlue.addColorStop(1,'{primary_color}00');
+  new Chart(usageCtx, {{ type:'line', data: {{ labels: Array.from({{length:13}},(_,i)=>`${{i*2}}h`),
+    datasets: [{{ data: [40,60,120,260,300,250,230,270,340,460,380,180,60], borderColor:'{primary_color}', backgroundColor: gradBlue, fill:true, tension:.4, pointRadius:0, borderWidth:2 }}] }},
+    options: {{ responsive:true, maintainAspectRatio:false, plugins:{{legend:{{display:false}}}},
+      scales: {{ x:{{grid:{{display:false}},ticks:{{color:'#5D6B8A',font:{{size:10}}}}}}, y:{{grid:{{color:'#1B2743'}},ticks:{{color:'#5D6B8A',font:{{size:10}}}}}} }} }} }});
+
+  let pingChartCreated = false;
+  function ensurePingChart() {{
+    if (pingChartCreated) return; pingChartCreated = true;
+    const ctx = document.getElementById('pingChart').getContext('2d');
+    new Chart(ctx, {{ type:'line', data: {{ labels: Array.from({{length:12}},(_,i)=>`${{i}}h`),
+      datasets: [{{ data:[9,10,11,10,12,14,11,10,9,11,13,11], borderColor:'{primary_color}', backgroundColor:'transparent', tension:.4, pointRadius:0, borderWidth:2 }}] }},
+      options: {{ responsive:true, maintainAspectRatio:false, plugins:{{legend:{{display:false}}}},
+        scales: {{ x:{{grid:{{display:false}},ticks:{{color:'#5D6B8A',font:{{size:10}}}}}}, y:{{grid:{{color:'#1B2743'}},ticks:{{color:'#5D6B8A',font:{{size:10}}}}}} }} }} }});
+  }}
+  const _origShowTab = showTab;
+  showTab = function(name) {{ _origShowTab(name); if (name === 'rede') ensurePingChart(); }};
+</script>
+</body></html>"""
 
 
 @router.get("/cliente/chamados/{request_id}", response_class=HTMLResponse)

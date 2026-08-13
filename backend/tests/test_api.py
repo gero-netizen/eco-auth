@@ -408,14 +408,14 @@ def test_network_monitor_returns_a_labeled_simulation() -> None:
 def test_network_incident_is_visible_to_client_and_can_be_resolved() -> None:
     resolve_network_incidents()
     create_network_incident()
-    assert "Nossa equipe já foi informada" in client.get("/cliente").text
+    assert "Nossa equipe já foi avisada" in client.get("/cliente").text
 
     resolved = client.post(
         "/api/v1/network/incidents/resolve", follow_redirects=True
     )
     assert resolved.status_code == 200
     assert client.get("/api/v1/network/alerts").json() == []
-    assert "Rede sem ocorrências gerais" in client.get("/cliente").text
+    assert "Rede sem ocorrências" in client.get("/cliente").text
 
 
 def test_pppoe_simulator_never_requires_a_password() -> None:
@@ -489,7 +489,7 @@ def test_simulated_client_portal_supports_trust_and_pix_flows() -> None:
     client.post("/cliente/reiniciar")
     portal = client.get("/cliente")
     assert portal.status_code == 200
-    assert "seguem a configuração real deste provedor" in portal.text
+    assert "Desbloqueio em Confiança" in portal.text
     assert "Bloqueada" in portal.text
     assert "PIX-SIMULADO" in portal.text
 
@@ -523,10 +523,9 @@ def test_client_support_request_can_be_converted_to_a_work_order() -> None:
     assert "converted" in converted.text
 
     portal = client.get("/cliente")
-    assert "Acompanhe meus chamados" in portal.text
+    assert "Seus chamados" in portal.text
     assert "OS criada" in portal.text
     assert 'http-equiv="refresh"' not in portal.text
-    assert "ATUALIZAR ANDAMENTO" in portal.text
     assert f"href='/cliente/chamados/{request_id}'" in portal.text
 
     detail = client.get(f"/cliente/chamados/{request_id}")
