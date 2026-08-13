@@ -1,0 +1,65 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-eco_auth}
+      POSTGRES_USER: ${POSTGRES_USER:-eco_auth}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eco_auth}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # A porta do Postgres não é exposta ao host por padrão — só o backend
+    # (dentro da mesma rede Docker) precisa falar com ele. Descomente a
+    # linha abaixo só se precisar acessar o banco diretamente de fora
+    # (ex.: psql da sua máquina) durante testes.
+    # ports:
+    #   - "5432:5432"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-eco_auth}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@db:5432/${POSTGRES_DB:-eco_auth}
+      MKAUTH_MODE: ${MKAUTH_MODE:-simulated}
+      MKAUTH_BASE_URL: ${MKAUTH_BASE_URL:-http://mkauth.test.invalid}
+      MKAUTH_CLIENT_ID: ${MKAUTH_CLIENT_ID:-}
+      MKAUTH_CLIENT_SECRET: ${MKAUTH_CLIENT_SECRET:-}
+      MKAUTH_VERIFY_SSL: ${MKAUTH_VERIFY_SSL:-true}
+      MKAUTH_ALLOW_HTTP: ${MKAUTH_ALLOW_HTTP:-false}
+      MKAUTH_WRITES_ENABLED: ${MKAUTH_WRITES_ENABLED:-false}
+      ROUTEROS_MODE: ${ROUTEROS_MODE:-simulated}
+      ROUTEROS_HOST: ${ROUTEROS_HOST:-}
+      ROUTEROS_PORT: ${ROUTEROS_PORT:-8728}
+      ROUTEROS_USERNAME: ${ROUTEROS_USERNAME:-}
+      ROUTEROS_PASSWORD: ${ROUTEROS_PASSWORD:-}
+      OLT_MODE: ${OLT_MODE:-simulated}
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no .env — nunca use o valor de bancada em produção}
+      INTEGRATION_ENCRYPTION_KEY: ${INTEGRATION_ENCRYPTION_KEY:-}
+      CENTRAL_USERNAME: ${CENTRAL_USERNAME:?defina CENTRAL_USERNAME no .env}
+      CENTRAL_PASSWORD: ${CENTRAL_PASSWORD:?defina CENTRAL_PASSWORD no .env — nunca use o valor de bancada em produção}
+      PLATFORM_ADMIN_USERNAME: ${PLATFORM_ADMIN_USERNAME:?defina PLATFORM_ADMIN_USERNAME no .env}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:?defina PLATFORM_ADMIN_PASSWORD no .env}
+      TECHNICIAN_USERNAME: ${TECHNICIAN_USERNAME:?defina TECHNICIAN_USERNAME no .env}
+      TECHNICIAN_PASSWORD: ${TECHNICIAN_PASSWORD:?defina TECHNICIAN_PASSWORD no .env — nunca use o valor de bancada em produção}
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      # Em produção, o ideal é o Nginx (fora deste compose) falar com o
+      # backend só pela rede interna do Docker — mantenha esta porta
+      # publicada apenas se for testar direto, sem proxy reverso na frente.
+      - "8000:8000"
+
+volumes:
+  db_data:
+  uploads_data:
