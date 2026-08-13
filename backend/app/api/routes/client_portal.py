@@ -13,6 +13,7 @@ from app.api.routes.financial import (
     trust_unlock_account,
 )
 from app.core.organization_store import organization_store
+from app.core.login_attempt_store import login_attempt_store
 from app.core.integration_config_store import get_integration_settings
 from app.core.config import get_settings
 from app.core.audit_store import audit_store
@@ -87,14 +88,20 @@ def _authenticated_customer(
 
 @router.get("/portal/{organization_slug}/login", response_class=HTMLResponse)
 async def portal_login_page(
-    organization_slug: str, error: bool = False
+    organization_slug: str, error: bool = False, locked: bool = False
 ) -> str:
     organization = organization_store.get_active_by_slug(organization_slug)
     if organization is None:
         raise HTTPException(404, "organization_not_found")
-    error_message = (
-        "<p class='error'>Usuário ou senha inválidos.</p>" if error else ""
-    )
+    if locked:
+        error_message = (
+            "<p class='error'>Muitas tentativas incorretas. Aguarde alguns "
+            "minutos antes de tentar de novo.</p>"
+        )
+    elif error:
+        error_message = "<p class='error'>Usuário ou senha inválidos.</p>"
+    else:
+        error_message = ""
     primary_color = _primary_color(organization)
     support_contact = _support_contact(organization)
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
@@ -113,15 +120,21 @@ async def portal_login(
     if organization is None:
         raise HTTPException(404, "organization_not_found")
     fields = parse_qs((await request.body()).decode("utf-8"))
+    username = fields.get("username", [""])[0]
+    login_scope = f"portal:{organization_slug.strip().casefold()}"
+    if login_attempt_store.is_locked_out(login_scope, username):
+        return RedirectResponse(
+            f"/portal/{organization_slug}/login?error=true&locked=true", status_code=303
+        )
     customer = portal_customer_store.authenticate(
-        organization["id"],
-        fields.get("username", [""])[0],
-        fields.get("password", [""])[0],
+        organization["id"], username, fields.get("password", [""])[0]
     )
     if customer is None:
+        login_attempt_store.record_failure(login_scope, username)
         return RedirectResponse(
             f"/portal/{organization_slug}/login?error=true", status_code=303
         )
+    login_attempt_store.record_success(login_scope, username)
     response = RedirectResponse(f"/portal/{organization_slug}", status_code=303)
     response.set_cookie(
         PORTAL_COOKIE_NAME,
@@ -129,7 +142,7 @@ async def portal_login(
         max_age=8 * 60 * 60,
         httponly=True,
         samesite="strict",
-        secure=False,
+        secure=get_settings().app_env == "production",
         path=f"/portal/{organization_slug}",
     )
     return response

@@ -78,6 +78,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    from app.core.config import get_settings
+
+    if get_settings().app_env == "production":
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=63072000; includeSubDomains"
+        )
+    return response
+
+
 app.include_router(health.router)
 app.include_router(technician_auth.router, prefix="/api/v1")
 app.include_router(work_orders.router, prefix="/api/v1")

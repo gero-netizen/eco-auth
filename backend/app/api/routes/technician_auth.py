@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
+from app.core.login_attempt_store import login_attempt_store
 from app.core.technician_store import technician_store
 from app.core.organization_store import organization_store
 from app.core.tenant_context import set_current_organization
@@ -66,14 +67,20 @@ async def require_technician(
 async def technician_login(request: LoginRequest) -> dict:
     settings = get_settings()
     organization_slug = request.organization_slug or settings.default_organization_slug
+    login_scope = f"technician:{organization_slug.strip().casefold()}"
+    if login_attempt_store.is_locked_out(login_scope, request.username):
+        raise HTTPException(429, "too_many_login_attempts")
     organization = organization_store.get_active_by_slug(organization_slug)
     if organization is None:
+        login_attempt_store.record_failure(login_scope, request.username)
         raise HTTPException(401, "invalid_technician_credentials")
     technician = technician_store.authenticate(
         request.username, request.password, organization["id"]
     )
     if technician is None:
+        login_attempt_store.record_failure(login_scope, request.username)
         raise HTTPException(401, "invalid_technician_credentials")
+    login_attempt_store.record_success(login_scope, request.username)
     return {
         "access_token": _new_token(
             organization["id"], technician["id"], technician["username"]

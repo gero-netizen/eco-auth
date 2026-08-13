@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.core.audit_store import audit_store
 from app.core.central_user_store import central_user_store
+from app.core.login_attempt_store import login_attempt_store
 from app.core.config import get_settings
 from app.core.organization_store import organization_store
 from app.core.tenant_context import set_current_organization
@@ -107,12 +108,18 @@ def _audit_mutation_once(request: Request, session: dict) -> None:
 
 
 @router.get("/central/login", response_class=HTMLResponse)
-async def central_login_page(request: Request, error: bool = False):
+async def central_login_page(request: Request, error: bool = False, locked: bool = False):
     if _valid_session(request.cookies.get(_cookie_name)):
         return RedirectResponse("/central", status_code=303)
-    error_message = (
-        "<p class='error'>Provedor, usuário ou senha inválidos.</p>" if error else ""
-    )
+    if locked:
+        error_message = (
+            "<p class='error'>Muitas tentativas incorretas. Aguarde alguns minutos "
+            "antes de tentar de novo.</p>"
+        )
+    elif error:
+        error_message = "<p class='error'>Provedor, usuário ou senha inválidos.</p>"
+    else:
+        error_message = ""
     default_slug = get_settings().default_organization_slug
     return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar na Central</title>
@@ -129,6 +136,9 @@ async def central_login(request: Request) -> RedirectResponse:
     organization_slug = fields.get(
         "organization_slug", [get_settings().default_organization_slug]
     )[0]
+    login_scope = f"central:{organization_slug.strip().casefold()}"
+    if login_attempt_store.is_locked_out(login_scope, username):
+        return RedirectResponse("/central/login?error=true&locked=true", status_code=303)
     organization = organization_store.get_active_by_slug(organization_slug)
     user = (
         central_user_store.authenticate(organization["id"], username, password)
@@ -136,7 +146,9 @@ async def central_login(request: Request) -> RedirectResponse:
         else None
     )
     if user is None:
+        login_attempt_store.record_failure(login_scope, username)
         return RedirectResponse("/central/login?error=true", status_code=303)
+    login_attempt_store.record_success(login_scope, username)
     response = RedirectResponse("/central", status_code=303)
     response.set_cookie(
         _cookie_name,
