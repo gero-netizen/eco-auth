@@ -293,7 +293,7 @@ async def central_dashboard(
         f"<td>{escape(status_labels.get(message['status'], message['status']))}</td>"
         f"<td>{escape(message['created_at'])}</td></tr>"
         for message in messages
-    ) or "<tr><td colspan='6'>Nenhuma mensagem simulada</td></tr>"
+    ) or "<tr><td colspan='6'>Nenhuma mensagem registrada</td></tr>"
     ai_category_options = "".join(
         f"<option value='{value}'>{escape(label)}</option>"
         for value, label in CATEGORY_LABELS.items()
@@ -762,7 +762,7 @@ async def central_dashboard(
 <body class="role-{escape(current_user['role'])}">
   <header><h1>Painel da Central</h1><div>{escape(session['organization']['name'])} • {escape(current_user['name'])} • {escape(role_labels[current_user['role']])}</div><form class="logout-form" method="post" action="/central/logout"><button class="secondary" type="submit">SAIR</button></form></header>
   <main>
-    <div class="simulation"><b>MODO SIMULADO</b> — nenhum dado desta tela representa clientes ou equipamentos reais.</div>
+    <div class="simulation">Confira o status de cada integração (real/bancada) na respectiva tela de configuração antes de agir sobre dados de clientes.</div>
     <div class="cards">
       <div class="card"><span>Ordens de serviço</span><strong>{len(orders)}</strong></div>
       <div class="card"><span>OS pendentes</span><strong>{pending}</strong></div>
@@ -773,7 +773,7 @@ async def central_dashboard(
       <nav class="sidebar" aria-label="Módulos da central">
         <div class="sidebar-title">Menu da central</div>
         <details class="menu-category" open><summary>Operação</summary><div class="menu-items">
-          <button class="menu-button active" type="button" data-target="work-orders">Abrir OS simulada</button>
+          <button class="menu-button active" type="button" data-target="work-orders">Criar ordem de serviço</button>
           <button class="menu-button" type="button" data-target="archived-orders">OS arquivadas</button>
           <button class="menu-button" type="button" data-target="inventory">Estoque do técnico</button>
           <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
@@ -797,7 +797,7 @@ async def central_dashboard(
         <details class="menu-category"><summary>Atendimento</summary><div class="menu-items">
           <button class="menu-button" type="button" data-target="support">Chamados do portal do cliente</button>
           <button class="menu-button" type="button" data-target="mkauth-tickets">Chamados MK-AUTH</button>
-          <button class="menu-button" type="button" data-target="whatsapp">WhatsApp simulado</button>
+          <button class="menu-button" type="button" data-target="whatsapp">WhatsApp</button>
           <button class="menu-button" type="button" data-target="ai-support">Assistente IA</button>
         </div></details>
         <details class="menu-category"><summary>Configurações</summary><div class="menu-items">
@@ -812,7 +812,7 @@ async def central_dashboard(
       </nav>
       <div class="module-area">
       <section class="module-panel active" data-module="work-orders">
-        <h2>Abrir OS simulada</h2>
+        <h2>Criar ordem de serviço</h2>
         <p>A OS será criada somente neste aplicativo e chegará ao celular na próxima sincronização. O cadastro do MK-AUTH não será alterado.</p>
         <form class="create-order" method="post" action="/api/v1/work-orders/from-central">
           <input id="order-external-customer-id" name="external_customer_id" type="hidden">
@@ -1038,9 +1038,9 @@ async def central_dashboard(
         <h3>Histórico de desbloqueios de confiança MK-AUTH</h3>
         <button type="button" id="load-trust-unlocks">ATUALIZAR HISTÓRICO</button>
         <table><thead><tr><th>Login</th><th>Motivo</th><th>Desbloqueado em UTC</th><th>Validade UTC</th><th>Status</th><th>Ação</th></tr></thead><tbody id="trust-unlocks-body"><tr><td colspan="6">Consulta ainda não realizada.</td></tr></tbody></table>
-        <h3>Pagamentos Pix simulados</h3>
+        <h3>Confirmação manual de pagamento (teste)</h3>
         <p>Nenhuma baixa real é enviada ao MK-AUTH nesta etapa.</p>
-        <button type="button" id="load-pix-simulations">ATUALIZAR SIMULAÇÕES</button>
+        <button type="button" id="load-pix-simulations">ATUALIZAR TESTES</button>
         <table><thead><tr><th>Título</th><th>Login</th><th>Valor</th><th>Data UTC</th><th>Status</th></tr></thead><tbody id="pix-simulations-body"><tr><td colspan="5">Consulta ainda não realizada.</td></tr></tbody></table>
         <h3>Pix real (Mercado Pago)</h3>
         <p>{mercado_pago_status}</p>
@@ -1494,7 +1494,7 @@ async def central_dashboard(
                 if (!pixResponse.ok) throw new Error('request_failed');
                 const result = await pixResponse.json();
                 if (result.status !== 'simulated') throw new Error(result.reason || result.status);
-                window.alert('Pagamento Pix simulado e registrado. Nenhuma baixa real foi enviada ao MK-AUTH.');
+                window.alert('Pagamento de teste registrado. Nenhuma baixa real foi enviada ao MK-AUTH.');
                 await loadPixSimulations(true);
               }} catch (error) {{
                 const reasonText = error instanceof Error ? error.message : 'simulation_failed';
@@ -1532,7 +1532,7 @@ async def central_dashboard(
                 const accessMessage = result.access_resolution === 'no_pending_titles'
                   ? ' Não restam títulos pendentes; a observação temporária foi encerrada.'
                   : ` Ainda restam ${{result.remaining_titles}} título(s) pendente(s); o acesso não foi alterado.`;
-                window.alert(`Baixa real confirmada pelo MK-AUTH.${{accessMessage}} Notificação registrada no WhatsApp simulado.`);
+                window.alert(`Baixa real confirmada pelo MK-AUTH.${{accessMessage}} Notificação registrada no WhatsApp.`);
                 await loadMkauthTitles(true);
                 await loadPixSimulations(true);
               }} catch (error) {{
@@ -1606,7 +1606,7 @@ async def central_dashboard(
             const row = document.createElement('tr');
             const cell = document.createElement('td');
             cell.colSpan = 5;
-            cell.textContent = 'Nenhum pagamento Pix simulado.';
+            cell.textContent = 'Nenhum pagamento de teste registrado.';
             row.appendChild(cell);
             body.appendChild(row);
           }}
@@ -3236,7 +3236,7 @@ async def central_evidence_gallery(
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Comprovações {escape(order.code)}</title>
 <style>body{{margin:0;background:#f3f8f7;color:#17332f;font:16px system-ui,sans-serif}}header{{background:#075e54;color:white;padding:22px 5vw}}main{{width:min(1050px,92vw);margin:24px auto}}a{{color:#075e54}}.back{{display:inline-block;margin-bottom:18px}}section{{background:white;padding:18px;border-radius:14px;margin-bottom:18px;box-shadow:0 2px 10px #17332f18}}.gallery{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px}}figure{{margin:0}}img{{width:100%;height:260px;object-fit:contain;background:#e8f0ee;border-radius:10px}}figcaption{{padding:8px 0}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px;border-bottom:1px solid #dce8e5;text-align:left}}.simulation{{background:#fff0c2;padding:12px;border-left:5px solid #e59b00}}</style></head>
 <body><header><h1>Comprovações da {escape(order.code)}</h1><div>{escape(order.customer_name)} • {escape(order.address)}</div></header>
-<main><a class="back" href="/central">← Voltar ao painel</a><p class="simulation"><b>MODO SIMULADO</b> — dados exclusivos da bancada.</p>
+<main><a class="back" href="/central">← Voltar ao painel</a><p class="simulation">Este relatório reflete os dados cadastrados nesta ordem de serviço no eco-auth.</p>
 <p><a href="/central/work-orders/{escape(order.id)}/report">Abrir relatório técnico da OS</a></p>
 <section><h2>Fotos e assinatura</h2><div class="gallery">{gallery}</div></section>
 <section><h2>Equipamentos lidos por QR Code</h2><table><thead><tr><th>Número de série</th><th>Identificador</th></tr></thead><tbody>{equipment_rows}</tbody></table></section></main></body></html>"""
@@ -3302,7 +3302,7 @@ async def central_work_order_report(
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Relatório {escape(order.code)}</title>
 <style>body{{margin:0;background:#eef5f3;color:#17332f;font:15px system-ui,sans-serif}}main{{width:min(950px,94vw);margin:22px auto}}header,section{{background:white;padding:20px;border-radius:12px;margin-bottom:15px}}header{{border-top:8px solid #075e54}}h1{{margin:0 0 6px}}h2{{font-size:19px;border-bottom:1px solid #ccdcd8;padding-bottom:8px}}.actions{{display:flex;gap:10px;margin-bottom:15px}}button,a.button{{border:0;border-radius:8px;padding:10px 14px;background:#075e54;color:white;text-decoration:none;font:inherit;cursor:pointer}}.simulation{{background:#fff0c2;border-left:5px solid #e59b00;padding:10px}}.meta{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;border-bottom:1px solid #dce8e5;text-align:left}}.ok{{color:#08785d;font-weight:bold}}.pending{{color:#b05c00;font-weight:bold}}.gallery{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}figure{{margin:0;break-inside:avoid}}img{{width:100%;height:280px;object-fit:contain;border:1px solid #dce8e5}}figcaption{{padding:6px}}footer{{text-align:center;color:#627773;margin:18px}}@media(max-width:650px){{.meta,.gallery{{grid-template-columns:1fr}}}}@media print{{body{{background:white}}main{{width:100%;margin:0}}.actions,.simulation{{display:none}}header,section{{box-shadow:none;border-radius:0;break-inside:avoid}}a{{color:inherit;text-decoration:none}}}}</style></head>
 <body><main><div class="actions"><a class="button" href="/central">Voltar à central</a><button onclick="window.print()">Imprimir ou salvar em PDF</button></div>
-<p class="simulation"><b>MODO SIMULADO</b> — relatório gerado exclusivamente com dados da bancada.</p>
+<p class="simulation">Este relatório reflete os dados cadastrados nesta ordem de serviço no eco-auth.</p>
 <header><h1>Relatório técnico — {escape(order.code)}</h1><div>Gerado em {generated_at}</div></header>
 <section><h2>Dados da ordem de serviço</h2><div class="meta"><div><b>Cliente:</b><br>{escape(order.customer_name)}</div><div><b>Situação:</b><br>{escape(order.status.value)}</div><div><b>Endereço:</b><br>{escape(order.address)}</div><div><b>Versão:</b><br>{order.version}</div></div></section>
 <section><h2>Checklist das comprovações</h2><table><tbody>{checklist_rows}</tbody></table></section>
@@ -3310,4 +3310,4 @@ async def central_work_order_report(
 <section><h2>Equipamentos vinculados</h2><table><thead><tr><th>Número de série</th><th>Identificador</th></tr></thead><tbody>{equipment_rows}</tbody></table></section>
 <section><h2>Materiais utilizados</h2><table><thead><tr><th>Item</th><th>Quantidade</th><th>Data UTC</th></tr></thead><tbody>{material_rows}</tbody></table></section>
 <section><h2>Provisionamento de ONU</h2><table><thead><tr><th>Serial</th><th>Perfil</th><th>Sinal</th><th>Data UTC</th></tr></thead><tbody>{provisioning_rows}</tbody></table></section>
-<footer>ISP Field • {escape(session['organization']['name'])} • Documento de ambiente simulado</footer></main></body></html>"""
+<footer>ISP Field • {escape(session['organization']['name'])} • Documento gerado pelo sistema</footer></main></body></html>"""

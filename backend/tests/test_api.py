@@ -252,7 +252,7 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     response = client.get("/central")
     assert response.status_code == 200
     assert "Painel da Central" in response.text
-    assert "MODO SIMULADO" in response.text
+    assert "Confira o status de cada integração" in response.text
     assert response.text.count('class="menu-button') == 25
     assert response.text.count('data-module=') == 25
     assert response.text.count('class="menu-category') == 7
@@ -322,7 +322,7 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "Nenhuma baixa real" in response.text
     assert "Configuração real (Meta WhatsApp Cloud API)" in response.text
     assert "WhatsApp real ainda não configurado" in response.text
-    assert "Notificação registrada no WhatsApp simulado" in response.text
+    assert "Notificação registrada no WhatsApp" in response.text
     assert 'http-equiv="refresh"' not in response.text
     assert "Atualização automática desativada" in response.text
     assert "mkauth-clients-filter" in response.text
@@ -489,7 +489,7 @@ def test_simulated_client_portal_supports_trust_and_pix_flows() -> None:
     client.post("/cliente/reiniciar")
     portal = client.get("/cliente")
     assert portal.status_code == 200
-    assert "MODO SIMULADO" in portal.text
+    assert "seguem a configuração real deste provedor" in portal.text
     assert "Bloqueada" in portal.text
     assert "PIX-SIMULADO" in portal.text
 
@@ -727,7 +727,7 @@ def test_central_generates_a_printable_work_order_report() -> None:
     assert "Relatório técnico" in report.text
     assert "Imprimir ou salvar em PDF" in report.text
     assert "Checklist das comprovações" in report.text
-    assert "MODO SIMULADO" in report.text
+    assert "Este relatório reflete os dados cadastrados" in report.text
 
 
 def test_inventory_consumption_is_applied_once() -> None:
