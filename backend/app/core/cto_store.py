@@ -1,4 +1,6 @@
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,11 +13,16 @@ class CtoStore:
     de portas e vínculo de cada porta a um cliente/OS específico."""
 
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
+                )
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(
                 """
@@ -49,10 +56,8 @@ class CtoStore:
                 """
             )
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     def create(
         self,
@@ -137,7 +142,7 @@ class CtoStore:
                     ) VALUES (?, ?, ?, ?, ?)""",
                     (organization_id, cto_id, port_number, login, work_order_id),
                 )
-        except sqlite3.IntegrityError as error:
+        except db.IntegrityError as error:
             raise ValueError("port_already_assigned") from error
         return self.get(organization_id, cto_id)
 

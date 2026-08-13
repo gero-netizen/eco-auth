@@ -1,5 +1,7 @@
 import json
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,17 +10,20 @@ from app.core.config import get_settings
 
 class AuditStore:
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
+                )
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -96,14 +101,14 @@ class AuditStore:
                 SELECT id, organization_id, user_id, user_name, username,
                        role, action, target, details, created_at
                 FROM audit_events WHERE organization_id = ?
-                ORDER BY created_at DESC, rowid DESC LIMIT ?
+                ORDER BY created_at DESC LIMIT ?
                 """,
                 (organization_id, safe_limit),
             ).fetchall()
         return [self._public(row) for row in rows]
 
     @staticmethod
-    def _public(row: sqlite3.Row) -> dict:
+    def _public(row) -> dict:
         item = dict(row)
         try:
             item["details"] = json.loads(item["details"])

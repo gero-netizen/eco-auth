@@ -1,8 +1,8 @@
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from app.core import db
 from app.core.config import get_settings
 from app.core.tenant_context import get_current_organization
 from app.domain.models import InventoryItem
@@ -10,34 +10,33 @@ from app.domain.models import InventoryItem
 
 class SimulatedInventoryGateway:
     def __init__(self, database_url: str | None = None) -> None:
-        self._database_path = Path(
-            (database_url or get_settings().database_url).removeprefix("sqlite:///")
+        self._database_url = database_url or get_settings().database_url
+        self._database_path = (
+            None
+            if db.is_postgres_url(self._database_url)
+            else Path(self._database_url.removeprefix("sqlite:///"))
         )
-        self._database_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._database_path is not None:
+            self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database_path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+    def _connect(self):
+        return db.connect(
+            self._database_url, sqlite_path=self._database_path, enable_sqlite_wal=True
+        )
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            inventory_columns = {
-                row[1]
-                for row in connection.execute("PRAGMA table_info(simulated_inventory)")
-            }
+            inventory_columns = db.get_existing_columns(
+                connection, "simulated_inventory", self._database_url
+            )
             if inventory_columns and "organization_id" not in inventory_columns:
                 connection.execute(
                     "ALTER TABLE simulated_inventory RENAME TO simulated_inventory_legacy"
                 )
-            movement_columns = {
-                row[1]
-                for row in connection.execute(
-                    "PRAGMA table_info(simulated_inventory_movements)"
-                )
-            }
+            movement_columns = db.get_existing_columns(
+                connection, "simulated_inventory_movements", self._database_url
+            )
             if movement_columns and "organization_id" not in movement_columns:
                 connection.execute(
                     "ALTER TABLE simulated_inventory_movements "
@@ -104,10 +103,11 @@ class SimulatedInventoryGateway:
             for item in self._seed_items():
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO simulated_inventory (
+                    INSERT INTO simulated_inventory (
                         organization_id, id, sku, description, quantity,
                         unit, serial_number, version
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (organization_id, id) DO NOTHING
                     """,
                     (
                         get_settings().default_organization_id,
@@ -141,7 +141,7 @@ class SimulatedInventoryGateway:
         )
 
     @staticmethod
-    def _from_row(row: sqlite3.Row) -> InventoryItem:
+    def _from_row(row) -> InventoryItem:
         return InventoryItem(
             id=row["id"], sku=row["sku"], description=row["description"],
             quantity=row["quantity"], unit=row["unit"],
@@ -229,10 +229,11 @@ class SimulatedInventoryGateway:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO simulated_inventory_movements (
+                INSERT INTO simulated_inventory_movements (
                     organization_id, id, item_id, work_order_id, kind,
                     quantity, source, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (organization_id, id) DO NOTHING
                 """,
                 (
                     current_organization_id, movement_id, item_id,

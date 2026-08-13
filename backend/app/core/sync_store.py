@@ -1,5 +1,7 @@
 import json
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -13,40 +15,41 @@ class SyncOperationStore:
     """Diário durável e isolado por provedor para sincronização móvel."""
 
     def __init__(self, database_url: str) -> None:
+        self._database_url = database_url
         self._database_path = self._path_from_url(database_url)
         self._initialize()
 
     @staticmethod
-    def _path_from_url(database_url: str) -> Path:
+    def _path_from_url(database_url: str):
+        if db.is_postgres_url(database_url):
+            return None
         prefix = "sqlite:///"
         if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
+            raise ValueError(
+                "Database URL must start with sqlite:/// or postgresql://"
+            )
         path = Path(database_url.removeprefix(prefix))
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database_path, timeout=10)
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+    def _connect(self):
+        return db.connect(
+            self._database_url, sqlite_path=self._database_path, enable_sqlite_wal=True
+        )
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            operation_columns = {
-                row[1]
-                for row in connection.execute(
-                    "PRAGMA table_info(processed_sync_operations)"
-                )
-            }
+            operation_columns = db.get_existing_columns(
+                connection, "processed_sync_operations", self._database_url
+            )
             if operation_columns and "organization_id" not in operation_columns:
                 connection.execute(
                     "ALTER TABLE processed_sync_operations "
                     "RENAME TO processed_sync_operations_legacy"
                 )
-            change_columns = {
-                row[1]
-                for row in connection.execute("PRAGMA table_info(sync_changes)")
-            }
+            change_columns = db.get_existing_columns(
+                connection, "sync_changes", self._database_url
+            )
             if change_columns and "organization_id" not in change_columns:
                 connection.execute(
                     "ALTER TABLE sync_changes RENAME TO sync_changes_legacy"
@@ -62,10 +65,15 @@ class SyncOperationStore:
                 )
                 """
             )
+            sequence_column = (
+                "sequence INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY"
+                if db.is_postgres_url(self._database_url)
+                else "sequence INTEGER PRIMARY KEY AUTOINCREMENT"
+            )
             connection.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS sync_changes (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    {sequence_column},
                     organization_id TEXT NOT NULL,
                     operation_id TEXT NOT NULL,
                     entity_type TEXT NOT NULL,
@@ -132,9 +140,10 @@ class SyncOperationStore:
         with self._connect() as connection:
             inserted = connection.execute(
                 """
-                INSERT OR IGNORE INTO processed_sync_operations
+                INSERT INTO processed_sync_operations
                     (organization_id, operation_id, result_json)
                 VALUES (?, ?, ?)
+                ON CONFLICT (organization_id, operation_id) DO NOTHING
                 """,
                 (
                     current_organization_id,
@@ -201,17 +210,18 @@ class SyncOperationStore:
     ) -> int:
         current_organization_id = self._organization_id(organization_id)
         with self._connect() as connection:
-            cursor = connection.execute(
+            row = connection.execute(
                 """
                 INSERT INTO sync_changes (
                     organization_id, operation_id, entity_type,
                     entity_id, kind, payload_json
                 ) VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING sequence
                 """,
                 (
                     current_organization_id, str(uuid4()),
                     change["entity_type"], change["entity_id"], change["kind"],
                     json.dumps(change["payload"], separators=(",", ":")),
                 ),
-            ).lastrowid
-        return int(cursor)
+            ).fetchone()
+        return int(row["sequence"])

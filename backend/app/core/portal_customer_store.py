@@ -2,6 +2,8 @@ import hashlib
 import hmac
 import os
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,11 +12,16 @@ from app.core.config import get_settings
 
 class PortalCustomerStore:
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
+                )
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(
                 """
@@ -34,12 +41,9 @@ class PortalCustomerStore:
             connection.execute(
                 "DELETE FROM portal_customers WHERE id = 'sim-customer-1'"
             )
-            columns = {
-                row["name"]
-                for row in connection.execute(
-                    "PRAGMA table_info(portal_customers)"
-                ).fetchall()
-            }
+            columns = db.get_existing_columns(
+                connection, "portal_customers", self._database_url
+            )
             if "external_customer_id" not in columns:
                 connection.execute(
                     "ALTER TABLE portal_customers ADD COLUMN external_customer_id TEXT"
@@ -53,10 +57,8 @@ class PortalCustomerStore:
                     "ALTER TABLE portal_customers ADD COLUMN phone TEXT"
                 )
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     @staticmethod
     def _hash_password(password: str, salt: bytes | None = None) -> str:
@@ -148,7 +150,7 @@ class PortalCustomerStore:
                         phone,
                     ),
                 )
-        except sqlite3.IntegrityError as error:
+        except db.IntegrityError as error:
             raise ValueError("portal_username_already_exists") from error
         customer = self.get_active(organization_id, customer_id)
         if customer is None:
@@ -244,7 +246,7 @@ class PortalCustomerStore:
         return self._public(row) if row else None
 
     @staticmethod
-    def _public(row: sqlite3.Row) -> dict:
+    def _public(row) -> dict:
         return {
             "id": row["id"],
             "organization_id": row["organization_id"],

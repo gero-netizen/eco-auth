@@ -1,6 +1,5 @@
 import hashlib
 import re
-import sqlite3
 from pathlib import Path
 from uuid import UUID
 
@@ -10,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.central_auth import _cookie_name, _valid_session
 from app.api.routes.technician_auth import _valid_token, require_technician
+from app.core import db
 from app.core.config import get_settings
 from app.core.tenant_context import get_current_organization, set_current_organization
 
@@ -28,16 +28,20 @@ _safe_work_order_id = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _max_upload_bytes = 15 * 1024 * 1024
 _upload_root = Path(__file__).resolve().parents[3] / "uploads"
 _database_url = get_settings().database_url
-_database_path = Path(_database_url.removeprefix("sqlite:///"))
+_database_path = (
+    None if db.is_postgres_url(_database_url) else Path(_database_url.removeprefix("sqlite:///"))
+)
+
+
+def _connect():
+    return db.connect(_database_url, sqlite_path=_database_path)
 
 
 def _initialize_equipment_store() -> None:
-    _database_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(_database_path) as connection:
-        columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(equipment_scans)")
-        }
+    if _database_path is not None:
+        _database_path.parent.mkdir(parents=True, exist_ok=True)
+    with _connect() as connection:
+        columns = db.get_existing_columns(connection, "equipment_scans", _database_url)
         if columns and "organization_id" not in columns:
             connection.execute(
                 "ALTER TABLE equipment_scans RENAME TO equipment_scans_legacy"
@@ -123,7 +127,7 @@ def list_equipment(
 ) -> list[dict[str, str]]:
     _validated_work_order_id(work_order_id)
     current_organization_id = organization_id or get_current_organization()
-    with sqlite3.connect(_database_path) as connection:
+    with _connect() as connection:
         rows = connection.execute(
             """
             SELECT scan_id, serial FROM equipment_scans
@@ -223,7 +227,7 @@ async def link_equipment(
     key = str(scan_id)
     normalized_serial = payload.serial.strip().upper()
     organization_id = get_current_organization()
-    with sqlite3.connect(_database_path) as connection:
+    with _connect() as connection:
         existing = connection.execute(
             """
             SELECT work_order_id, serial FROM equipment_scans

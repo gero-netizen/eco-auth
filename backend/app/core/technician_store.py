@@ -3,6 +3,8 @@ import hmac
 import os
 import secrets
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,14 +13,15 @@ from app.core.config import get_settings
 
 class TechnicianStore:
     def __init__(self, database_url: str) -> None:
-        self._path = Path(database_url.removeprefix("sqlite:///"))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            self._path = Path(database_url.removeprefix("sqlite:///"))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -36,10 +39,7 @@ class TechnicianStore:
                 )
                 """
             )
-            columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(technicians)")
-            }
+            columns = db.get_existing_columns(connection, "technicians", self._database_url)
             if "organization_id" not in columns:
                 self._migrate_to_organizations(connection)
             if "must_change_password" not in columns:
@@ -58,7 +58,7 @@ class TechnicianStore:
             )
 
     @staticmethod
-    def _migrate_to_organizations(connection: sqlite3.Connection) -> None:
+    def _migrate_to_organizations(connection) -> None:
         default_organization_id = get_settings().default_organization_id
         connection.execute(
             """
@@ -116,10 +116,11 @@ class TechnicianStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO technicians (
+                INSERT INTO technicians (
                     id, organization_id, name, username, password_hash
                 )
                 VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO NOTHING
                 """,
                 (
                     technician_id,
@@ -208,7 +209,7 @@ class TechnicianStore:
                         self._hash_password(password),
                     ),
                 )
-        except sqlite3.IntegrityError as error:
+        except db.IntegrityError as error:
             raise ValueError("technician_username_already_exists") from error
         return {
             "id": technician_id,

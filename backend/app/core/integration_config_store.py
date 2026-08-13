@@ -1,6 +1,8 @@
 import base64
 import hashlib
 import sqlite3
+
+from app.core import db
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,11 +33,16 @@ class IntegrationConfigStore:
     """Configurações de integração isoladas e segredos criptografados por provedor."""
 
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
+                )
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         self._cipher = Fernet(self._fernet_key())
         self._initialize()
 
@@ -46,10 +53,8 @@ class IntegrationConfigStore:
         digest = hashlib.sha256(source.encode("utf-8")).digest()
         return base64.urlsafe_b64encode(digest)
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     def _encrypt(self, value: str) -> str:
         return self._cipher.encrypt(value.encode("utf-8")).decode("ascii")
@@ -87,13 +92,14 @@ class IntegrationConfigStore:
             )
             connection.execute(
                 """
-                INSERT OR IGNORE INTO organization_integrations (
+                INSERT INTO organization_integrations (
                     organization_id, mkauth_mode, mkauth_base_url,
                     mkauth_client_id_encrypted, mkauth_client_secret_encrypted,
                     mkauth_verify_ssl, mkauth_allow_http, mkauth_writes_enabled,
                     routeros_mode, routeros_host, routeros_port,
                     routeros_username_encrypted, routeros_password_encrypted
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (organization_id) DO NOTHING
                 """,
                 (
                     settings.default_organization_id,
@@ -148,7 +154,7 @@ class IntegrationConfigStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO organization_integrations (
+                INSERT INTO organization_integrations (
                     organization_id, mkauth_mode, mkauth_base_url,
                     mkauth_client_id_encrypted, mkauth_client_secret_encrypted,
                     mkauth_verify_ssl, mkauth_allow_http, mkauth_writes_enabled,
@@ -156,6 +162,7 @@ class IntegrationConfigStore:
                     routeros_username_encrypted, routeros_password_encrypted
                 ) VALUES (?, 'simulated', ?, ?, ?, 1, 0, 0,
                           'simulated', '', 8728, ?, ?)
+                ON CONFLICT (organization_id) DO NOTHING
                 """,
                 (
                     organization_id,

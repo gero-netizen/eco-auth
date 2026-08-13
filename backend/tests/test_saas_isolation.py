@@ -3,10 +3,23 @@ import sqlite3
 from types import SimpleNamespace
 from uuid import uuid4
 
+from app.core import db
 from app.core.organization_store import OrganizationStore
 from app.core.technician_store import TechnicianStore
 from app.domain.models import WorkOrderStatus
 from app.integrations.mkauth.client import SimulatedMkAuthGateway
+
+
+def _connect_to_configured_database():
+    """Auxiliar de teste: conecta no banco configurado em DATABASE_URL,
+    seja SQLite ou PostgreSQL."""
+    database_url = get_settings().database_url
+    sqlite_path = (
+        None
+        if db.is_postgres_url(database_url)
+        else database_url.removeprefix("sqlite:///")
+    )
+    return db.connect(database_url, sqlite_path=sqlite_path)
 from app.core.integration_config_store import (
     IntegrationConfigStore,
     TenantIntegrationSettings,
@@ -380,7 +393,6 @@ def test_support_requests_are_isolated_by_organization() -> None:
     second_request_id = create_support_request(
         "customer-1", "Sinal baixo", "Teste do provedor dois", second_id
     )
-    database_path = get_settings().database_url.removeprefix("sqlite:///")
     try:
         assert [item["id"] for item in list_support_requests(
             organization_id=first_id
@@ -395,11 +407,12 @@ def test_support_requests_are_isolated_by_organization() -> None:
         else:
             raise AssertionError("cross-organization support access was allowed")
     finally:
-        with sqlite3.connect(database_path) as connection:
+        with _connect_to_configured_database() as connection:
             connection.execute(
                 "DELETE FROM support_requests WHERE organization_id IN (?, ?)",
                 (first_id, second_id),
             )
+            connection.commit()
 
 
 def test_provisioning_is_isolated_by_organization(tmp_path) -> None:
@@ -417,7 +430,6 @@ def test_equipment_scans_are_isolated_by_organization() -> None:
     first_id = f"equipment-first-{uuid4()}"
     second_id = f"equipment-second-{uuid4()}"
     scan_id = uuid4()
-    database_path = get_settings().database_url.removeprefix("sqlite:///")
     try:
         set_current_organization(first_id)
         asyncio.run(
@@ -426,7 +438,7 @@ def test_equipment_scans_are_isolated_by_organization() -> None:
         assert len(list_equipment("work-order-1", first_id)) == 1
         assert list_equipment("work-order-1", second_id) == []
     finally:
-        with sqlite3.connect(database_path) as connection:
+        with _connect_to_configured_database() as connection:
             connection.execute(
                 "DELETE FROM equipment_scans WHERE organization_id = ?",
                 (first_id,),

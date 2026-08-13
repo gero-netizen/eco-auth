@@ -1,5 +1,7 @@
 import re
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,11 +34,16 @@ class AiSupportStore:
     """Base isolada para rascunhos assistidos, sem envio ou ação automática."""
 
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
+                )
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS ai_knowledge (
@@ -62,20 +69,18 @@ class AiSupportStore:
                     PRIMARY KEY (organization_id, id)
                 )"""
             )
-            self._migrate(connection)
+            self._migrate(connection, self._database_url)
 
     @staticmethod
-    def _migrate(connection: sqlite3.Connection) -> None:
-        knowledge_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(ai_knowledge)")
-        }
+    def _migrate(connection, database_url: str) -> None:
+        knowledge_columns = db.get_existing_columns(connection, "ai_knowledge", database_url)
         if "category" not in knowledge_columns:
             connection.execute(
                 "ALTER TABLE ai_knowledge ADD COLUMN category TEXT NOT NULL DEFAULT 'outro'"
             )
-        draft_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(ai_support_drafts)")
-        }
+        draft_columns = db.get_existing_columns(
+            connection, "ai_support_drafts", database_url
+        )
         draft_migrations = {
             "support_request_id": "TEXT",
             "category": "TEXT NOT NULL DEFAULT 'outro'",
@@ -95,10 +100,8 @@ class AiSupportStore:
                     f"ALTER TABLE ai_support_drafts ADD COLUMN {column} {definition}"
                 )
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     def create_knowledge(
         self, organization_id: str, title: str, content: str, category: str = "outro"
@@ -278,7 +281,7 @@ class AiSupportStore:
             row = connection.execute(
                 """SELECT * FROM ai_support_drafts
                 WHERE organization_id = ? AND support_request_id = ?
-                ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                ORDER BY created_at DESC LIMIT 1""",
                 (organization_id, str(support_request_id)),
             ).fetchone()
         return dict(row) if row else None
@@ -287,7 +290,7 @@ class AiSupportStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT * FROM ai_support_drafts WHERE organization_id = ?
-                ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                ORDER BY created_at DESC LIMIT ?""",
                 (organization_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]

@@ -1,6 +1,8 @@
 import hashlib
 import secrets
 import sqlite3
+
+from app.core import db
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -10,11 +12,16 @@ from app.core.config import get_settings
 
 class PortalInviteStore:
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
+                )
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS portal_invites (
@@ -28,10 +35,8 @@ class PortalInviteStore:
                 )"""
             )
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     @staticmethod
     def _token_hash(token: str) -> str:
@@ -66,13 +71,27 @@ class PortalInviteStore:
     def consume(self, organization_id: str, token: str) -> dict | None:
         now = datetime.now(timezone.utc)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """SELECT * FROM portal_invites
-                WHERE organization_id = ? AND token_hash = ?
-                AND used_at IS NULL AND expires_at >= ?""",
-                (organization_id, self._token_hash(token), now.isoformat()),
-            ).fetchone()
+            if db.is_postgres_url(self._database_url):
+                # No Postgres, o SELECT ... FOR UPDATE trava a linha até o
+                # commit/rollback, impedindo que duas requisições concorrentes
+                # consumam o mesmo convite ao mesmo tempo.
+                row = connection.execute(
+                    """SELECT * FROM portal_invites
+                    WHERE organization_id = ? AND token_hash = ?
+                    AND used_at IS NULL AND expires_at >= ?
+                    FOR UPDATE""",
+                    (organization_id, self._token_hash(token), now.isoformat()),
+                ).fetchone()
+            else:
+                # No SQLite, BEGIN IMMEDIATE adianta o lock de escrita para
+                # antes do SELECT, com a mesma finalidade.
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    """SELECT * FROM portal_invites
+                    WHERE organization_id = ? AND token_hash = ?
+                    AND used_at IS NULL AND expires_at >= ?""",
+                    (organization_id, self._token_hash(token), now.isoformat()),
+                ).fetchone()
             if row is None:
                 connection.rollback()
                 return None

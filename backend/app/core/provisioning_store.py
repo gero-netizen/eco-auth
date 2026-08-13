@@ -1,5 +1,7 @@
 import json
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from typing import Any
 
@@ -9,18 +11,20 @@ from app.core.tenant_context import get_current_organization
 
 class ProvisioningStore:
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
-            columns = {
-                row[1]
-                for row in connection.execute(
-                    "PRAGMA table_info(provisioning_operations)"
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
                 )
-            }
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            columns = db.get_existing_columns(
+                connection, "provisioning_operations", self._database_url
+            )
             if columns and "organization_id" not in columns:
                 connection.execute(
                     """
@@ -57,10 +61,8 @@ class ProvisioningStore:
                 )
                 connection.execute("DROP TABLE provisioning_operations_legacy")
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path, enable_sqlite_wal=True)
 
     def get(
         self, operation_id: str, organization_id: str | None = None
@@ -87,10 +89,11 @@ class ProvisioningStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO provisioning_operations (
+                INSERT INTO provisioning_operations (
                     organization_id, operation_id, work_order_id, serial,
                     profile, result_json
                 ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (organization_id, operation_id) DO NOTHING
                 """,
                 (
                     current_organization_id,

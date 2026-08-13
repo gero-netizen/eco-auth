@@ -1,4 +1,3 @@
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -9,11 +8,15 @@ from pydantic import BaseModel
 
 from app.api.routes.technician_auth import require_technician
 from app.api.routes.central_auth import require_central_roles
+from app.core import db
 from app.core.config import get_settings
 from app.core.tenant_context import get_current_organization
 
 router = APIRouter(prefix="/network", tags=["network-monitor-simulator"])
-_database_path = Path(get_settings().database_url.removeprefix("sqlite:///"))
+_database_url = get_settings().database_url
+_database_path = (
+    None if db.is_postgres_url(_database_url) else Path(_database_url.removeprefix("sqlite:///"))
+)
 
 
 class NetworkAlert(BaseModel):
@@ -28,18 +31,15 @@ class NetworkAlert(BaseModel):
     simulated: bool = True
 
 
-def _connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(_database_path, timeout=10)
-    connection.row_factory = sqlite3.Row
-    return connection
+def _connect():
+    return db.connect(_database_url, sqlite_path=_database_path)
 
 
 def _initialize() -> None:
-    _database_path.parent.mkdir(parents=True, exist_ok=True)
+    if _database_path is not None:
+        _database_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect() as connection:
-        columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(network_incidents)")
-        }
+        columns = db.get_existing_columns(connection, "network_incidents", _database_url)
         if columns and "organization_id" not in columns:
             connection.execute(
                 "ALTER TABLE network_incidents RENAME TO network_incidents_legacy"
@@ -59,9 +59,9 @@ def _initialize() -> None:
             )
             """
         )
-        incident_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(network_incidents)")
-        }
+        incident_columns = db.get_existing_columns(
+            connection, "network_incidents", _database_url
+        )
         if "kind" not in incident_columns:
             connection.execute(
                 "ALTER TABLE network_incidents ADD COLUMN kind TEXT NOT NULL DEFAULT 'manual'"
@@ -95,7 +95,7 @@ def _initialize() -> None:
 
 
 def create_network_incident(
-    connection: sqlite3.Connection | None = None,
+    connection=None,
     organization_id: str | None = None,
     kind: str = "manual_simulation",
     severity: str = "warning",

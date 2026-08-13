@@ -1,4 +1,3 @@
-import sqlite3
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -7,6 +6,7 @@ from fastapi.responses import RedirectResponse
 
 from app.api.routes.work_orders import create_simulated_work_order
 from app.api.routes.central_auth import require_central_roles
+from app.core import db
 from app.core.ai_orchestrator import create_draft_for_ticket
 from app.core.config import get_settings
 from app.core.organization_store import organization_store
@@ -14,30 +14,38 @@ from app.core.portal_session import require_portal_customer
 from app.core.tenant_context import get_current_organization
 
 router = APIRouter(tags=["support-simulator"])
-_database_path = Path(get_settings().database_url.removeprefix("sqlite:///"))
+_database_url = get_settings().database_url
+_database_path = (
+    None
+    if db.is_postgres_url(_database_url)
+    else Path(_database_url.removeprefix("sqlite:///"))
+)
 
 
-def _connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(_database_path, timeout=10)
-    connection.row_factory = sqlite3.Row
-    return connection
+def _connect():
+    return db.connect(_database_url, sqlite_path=_database_path)
 
 
 def _initialize() -> None:
-    _database_path.parent.mkdir(parents=True, exist_ok=True)
+    if _database_path is not None:
+        _database_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect() as connection:
-        existing_columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(support_requests)")
-        }
+        existing_columns = db.get_existing_columns(
+            connection, "support_requests", _database_url
+        )
         if existing_columns and "organization_id" not in existing_columns:
             connection.execute(
                 "ALTER TABLE support_requests RENAME TO support_requests_legacy"
             )
+        sequence_column = (
+            "id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY"
+            if db.is_postgres_url(_database_url)
+            else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+        )
         connection.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS support_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                {sequence_column},
                 organization_id TEXT NOT NULL,
                 customer_id TEXT NOT NULL,
                 subject TEXT NOT NULL,
@@ -72,10 +80,7 @@ def _initialize() -> None:
                 (get_settings().default_organization_id,),
             )
             connection.execute("DROP TABLE support_requests_legacy")
-        columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(support_requests)")
-        }
+        columns = db.get_existing_columns(connection, "support_requests", _database_url)
         if "rating" not in columns:
             connection.execute("ALTER TABLE support_requests ADD COLUMN rating INTEGER")
         if "rating_comment" not in columns:
@@ -123,14 +128,16 @@ def create_support_request(
 ) -> int:
     current_organization_id = organization_id or get_current_organization()
     with _connect() as connection:
-        request_id = connection.execute(
+        row = connection.execute(
             """
             INSERT INTO support_requests (
                 organization_id, customer_id, subject, description
             ) VALUES (?, ?, ?, ?)
+            RETURNING id
             """,
             (current_organization_id, customer_id, subject, description),
-        ).lastrowid
+        ).fetchone()
+        request_id = row["id"]
     # Um rascunho é preparado assim que o chamado chega. Nada sai para o
     # cliente até um atendente aprovar (ver ai_support_store.review_draft).
     # A IA real do provedor é tentada primeiro; se não estiver configurada,

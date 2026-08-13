@@ -2,6 +2,8 @@ import hashlib
 import hmac
 import os
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,17 +14,20 @@ CENTRAL_USER_ROLES = {"owner", "admin", "attendant", "viewer"}
 
 class CentralUserStore:
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
+                )
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     def _initialize(self) -> None:
         settings = get_settings()
@@ -85,9 +90,10 @@ class CentralUserStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO central_users (
+                INSERT INTO central_users (
                     id, organization_id, name, username, password_hash, role
                 ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO NOTHING
                 """,
                 (
                     user_id,
@@ -172,7 +178,7 @@ class CentralUserStore:
                         role,
                     ),
                 )
-        except sqlite3.IntegrityError as error:
+        except db.IntegrityError as error:
             raise ValueError("central_username_already_exists") from error
         user = self.get_active(user_id, organization_id)
         if user is None:
@@ -199,7 +205,7 @@ class CentralUserStore:
             raise KeyError("central_user_not_found")
 
     @staticmethod
-    def _public(row: sqlite3.Row) -> dict:
+    def _public(row) -> dict:
         return {
             "id": row["id"],
             "organization_id": row["organization_id"],

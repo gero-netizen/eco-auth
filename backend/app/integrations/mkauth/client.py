@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.core import db
 from app.core.config import get_settings
 from app.core.tenant_context import get_current_organization
 from app.domain.models import WorkOrder, WorkOrderStatus
@@ -17,10 +17,14 @@ class MkAuthGateway(ABC):
 
 class SimulatedMkAuthGateway(MkAuthGateway):
     def __init__(self, database_url: str | None = None) -> None:
-        self._database_path = Path(
-            (database_url or get_settings().database_url).removeprefix("sqlite:///")
+        self._database_url = database_url or get_settings().database_url
+        self._database_path = (
+            None
+            if db.is_postgres_url(self._database_url)
+            else Path(self._database_url.removeprefix("sqlite:///"))
         )
-        self._database_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._database_path is not None:
+            self._database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(
                 """
@@ -37,9 +41,9 @@ class SimulatedMkAuthGateway(MkAuthGateway):
                 )
                 """
             )
-            columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(simulated_work_orders)")
-            }
+            columns = db.get_existing_columns(
+                connection, "simulated_work_orders", self._database_url
+            )
             if "technician_id" not in columns:
                 connection.execute(
                     "ALTER TABLE simulated_work_orders ADD COLUMN technician_id TEXT NOT NULL DEFAULT 'bench-technician'"
@@ -96,19 +100,19 @@ class SimulatedMkAuthGateway(MkAuthGateway):
             )
             connection.execute(
                 """
-                INSERT OR IGNORE INTO simulated_work_orders (
+                INSERT INTO simulated_work_orders (
                     id, code, customer_name, address, status, latitude,
                     longitude, version, updated_at, organization_id
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO NOTHING
                 """,
                 (*self._values(order), get_settings().default_organization_id),
             )
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database_path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+    def _connect(self):
+        return db.connect(
+            self._database_url, sqlite_path=self._database_path, enable_sqlite_wal=True
+        )
 
     @staticmethod
     def _values(order: WorkOrder) -> tuple:
@@ -125,7 +129,7 @@ class SimulatedMkAuthGateway(MkAuthGateway):
         )
 
     @staticmethod
-    def _from_row(row: sqlite3.Row) -> WorkOrder:
+    def _from_row(row) -> WorkOrder:
         return WorkOrder(
             id=row["id"],
             code=row["code"],

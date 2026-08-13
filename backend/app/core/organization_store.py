@@ -1,4 +1,6 @@
 import sqlite3
+
+from app.core import db
 from pathlib import Path
 from uuid import uuid4
 
@@ -9,17 +11,20 @@ class OrganizationStore:
     """Cadastro mínimo de provedores para a transição multiempresa."""
 
     def __init__(self, database_url: str) -> None:
-        prefix = "sqlite:///"
-        if not database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// database URLs are supported")
-        self._path = Path(database_url.removeprefix(prefix))
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._database_url = database_url
+        self._path = None
+        if not db.is_postgres_url(database_url):
+            prefix = "sqlite:///"
+            if not database_url.startswith(prefix):
+                raise ValueError(
+                    "Database URL must start with sqlite:/// or postgresql://"
+                )
+            self._path = Path(database_url.removeprefix(prefix))
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return db.connect(self._database_url, sqlite_path=self._path)
 
     def _initialize(self) -> None:
         settings = get_settings()
@@ -37,8 +42,9 @@ class OrganizationStore:
             )
             connection.execute(
                 """
-                INSERT OR IGNORE INTO organizations (id, name, slug)
+                INSERT INTO organizations (id, name, slug)
                 VALUES (?, ?, ?)
+                ON CONFLICT (id) DO NOTHING
                 """,
                 (
                     settings.default_organization_id,
@@ -46,12 +52,7 @@ class OrganizationStore:
                     settings.default_organization_slug,
                 ),
             )
-            columns = {
-                row["name"]
-                for row in connection.execute(
-                    "PRAGMA table_info(organizations)"
-                ).fetchall()
-            }
+            columns = db.get_existing_columns(connection, "organizations", self._database_url)
             for name, definition in {
                 "primary_color": "TEXT NOT NULL DEFAULT '#075e54'",
                 "support_email": "TEXT NOT NULL DEFAULT ''",
@@ -124,7 +125,7 @@ class OrganizationStore:
                     """,
                     (organization_id, name, slug),
                 )
-        except sqlite3.IntegrityError as error:
+        except db.IntegrityError as error:
             raise ValueError("organization_slug_already_exists") from error
         organization = self.get_active(organization_id)
         if organization is None:
