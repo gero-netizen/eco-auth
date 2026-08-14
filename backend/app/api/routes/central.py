@@ -233,15 +233,29 @@ async def central_dashboard(
         f"<td>{escape(str(item['created_at']))}</td></tr>"
         for item in provisioning[:5]
     ) or "<tr><td colspan='3'>Nenhum provisionamento registrado</td></tr>"
+    _fin_account_color = {
+        "paid": "green", "active": "green",
+        "overdue": "red", "blocked": "red",
+        "trust_released": "blue",
+    }
+    _fin_account_labels = {
+        "blocked": "Bloqueada",
+        "trust_released": "Liberada em confiança",
+        "active": "Ativa",
+        "overdue": "Vencida",
+        "paid": "Paga",
+    }
     financial_rows = "".join(
         f"<tr><td>{escape(account['customer_name'])}</td>"
         f"<td>R$ {account['invoice_amount']:.2f}</td>"
-        f"<td><span class='status'>{escape(account['invoice_status'])}</span></td>"
-        f"<td>{escape(account['access_status'])}</td>"
-        f"<td><form method='post' action='/api/v1/financial/accounts/{account['id']}/trust-unlock?redirect=true'>"
-        f"<button class='secondary' type='submit'>Confiança 48h</button></form> "
+        f"<td><span class='fin-status fin-status-{_fin_account_color.get(account['invoice_status'], 'gray')}'>"
+        f"{escape(_fin_account_labels.get(account['invoice_status'], account['invoice_status']))}</span></td>"
+        f"<td><span class='fin-status fin-status-{_fin_account_color.get(account['access_status'], 'gray')}'>"
+        f"{escape(_fin_account_labels.get(account['access_status'], account['access_status']))}</span></td>"
+        f"<td><div class='row-actions'><form method='post' action='/api/v1/financial/accounts/{account['id']}/trust-unlock?redirect=true'>"
+        f"<button class='btn-sm secondary' type='submit'>Confiança 48h</button></form> "
         f"<form method='post' action='/api/v1/financial/accounts/{account['id']}/simulate-pix?redirect=true'>"
-        f"<button type='submit'>Simular Pix</button></form></td></tr>"
+        f"<button class='btn-sm' type='submit'>Simular Pix</button></form></div></td></tr>"
         for account in financial_accounts
     )
     mercado_pago_config = mercado_pago_config_store.get(organization_id)
@@ -259,11 +273,16 @@ async def central_dashboard(
         "expired": "Expirado",
         "error": "Divergência — verificar",
     }
+    _fin_payment_color = {
+        "pending": "amber", "confirmed": "green", "rejected": "red",
+        "expired": "gray", "error": "red",
+    }
     financial_payment_rows = "".join(
         f"<tr><td>{escape(item['title_uuid'])}</td><td>{escape(item['login'])}</td>"
         f"<td>R$ {escape(item['amount'])}</td>"
-        f"<td>{escape(financial_payment_status_labels.get(item['status'], item['status']))}"
-        + (f" ({escape(item['error_reason'])})" if item.get("error_reason") else "")
+        f"<td><span class='fin-status fin-status-{_fin_payment_color.get(item['status'], 'gray')}'>"
+        f"{escape(financial_payment_status_labels.get(item['status'], item['status']))}</span>"
+        + (f" <small>({escape(item['error_reason'])})</small>" if item.get("error_reason") else "")
         + f"</td><td>{escape(item['created_at'])}</td>"
         f"<td>{escape(item['confirmed_at'] or '-')}</td></tr>"
         for item in financial_payment_store.list_recent(organization_id, limit=30)
@@ -823,6 +842,12 @@ async def central_dashboard(
     .net-bool-yes .net-bool-dot {{ background:#22c55e; }} .net-bool-yes {{ color:#176b2c; }}
     .net-bool-no .net-bool-dot {{ background:#ef4444; }} .net-bool-no {{ color:#b91c1c; }}
     .net-bool-unknown .net-bool-dot {{ background:#9ca3af; }} .net-bool-unknown {{ color:var(--muted); }}
+    .fin-status {{ font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px; display:inline-block; white-space:nowrap; }}
+    .fin-status-green {{ background:#d8f3dc; color:#176b2c; }}
+    .fin-status-amber {{ background:#fef3c7; color:#b45309; }}
+    .fin-status-red {{ background:#fee2e2; color:#b91c1c; }}
+    .fin-status-blue {{ background:#dbeafe; color:#1d4ed8; }}
+    .fin-status-gray {{ background:#f1f3f4; color:#6b7280; }}
     @media(max-width:850px) {{
       .dashboard-layout {{ grid-template-columns:1fr; }}
       .sidebar {{ position:static; display:block; padding:10px; }}
@@ -1127,7 +1152,7 @@ async def central_dashboard(
         <h2>Financeiro e desbloqueio</h2>
         <table><thead><tr><th>Cliente fictício</th><th>Fatura</th><th>Situação</th><th>Acesso</th><th>Simulações</th></tr></thead><tbody>{financial_rows}</tbody></table>
         <h3>Regras de desbloqueio de confiança</h3>
-        <form class="create-order" method="post" action="/central/financeiro/desbloqueio-confianca/regras">
+        <form class="create-order wo-form" method="post" action="/central/financeiro/desbloqueio-confianca/regras">
           <label>Duração da liberação (horas)<input type="number" name="duration_hours" min="1" max="720" value="{trust_unlock_rules.duration_hours}" required></label>
           <label>Máximo de liberações por mês<input type="number" name="max_unlocks_per_month" min="1" max="30" value="{trust_unlock_rules.max_unlocks_per_month}" required></label>
           <label>Dívida máxima permitida (R$)<input type="number" step="0.01" name="max_debt_amount" min="0.01" value="{trust_unlock_rules.max_debt_amount}" required></label>
@@ -1145,7 +1170,7 @@ async def central_dashboard(
         <table><thead><tr><th>Título</th><th>Login</th><th>Valor</th><th>Data UTC</th><th>Status</th></tr></thead><tbody id="pix-simulations-body"><tr><td colspan="5">Consulta ainda não realizada.</td></tr></tbody></table>
         <h3>Pix real (Mercado Pago)</h3>
         <p>{mercado_pago_status}</p>
-        <form class="create-order" method="post" action="/central/financeiro/mercadopago/config">
+        <form class="create-order wo-form" method="post" action="/central/financeiro/mercadopago/config">
           <label><input type="checkbox" name="enabled" value="1" {'checked' if mercado_pago_config.enabled else ''}> Ativar cobrança Pix real para este provedor</label>
           <label>Token de acesso<input type="password" name="access_token" placeholder="{'Deixe em branco para manter o token atual' if mercado_pago_config.access_token else 'APP_USR-...'}"></label>
           <label>Segredo do webhook (assinatura)<input type="password" name="webhook_secret" placeholder="{'Deixe em branco para manter o segredo atual' if mercado_pago_config.webhook_secret else 'Segredo de assinatura do webhook'}"></label>
@@ -1695,12 +1720,18 @@ async def central_dashboard(
           body.replaceChildren();
           data.records.forEach((record) => {{
             const row = document.createElement('tr');
-            const paymentStatus = record.status === 'real_paid' ? 'Baixa real confirmada' : 'Simulado';
-            [record.title_number, record.login, `R$ ${{record.amount}}`, record.simulated_at, paymentStatus].forEach((value) => {{
+            const isReal = record.status === 'real_paid';
+            [record.title_number, record.login, `R$ ${{record.amount}}`, record.simulated_at].forEach((value) => {{
               const cell = document.createElement('td');
               cell.textContent = value;
               row.appendChild(cell);
             }});
+            const statusCell = document.createElement('td');
+            const pill = document.createElement('span');
+            pill.className = `fin-status fin-status-${{isReal ? 'green' : 'gray'}}`;
+            pill.textContent = isReal ? 'Baixa real confirmada' : 'Simulado';
+            statusCell.appendChild(pill);
+            row.appendChild(statusCell);
             body.appendChild(row);
           }});
           if (!data.records.length) {{
@@ -1813,15 +1844,23 @@ async def central_dashboard(
           data.records.forEach((record) => {{
             const row = document.createElement('tr');
             const statusLabels = {{ active: 'Ativo', expired: 'Encerrado pelo prazo', cancelled: 'Encerrado manualmente', paid: 'Resolvido por pagamento' }};
-            [record.login, record.reason, record.unlocked_at, record.expires_at, statusLabels[record.status] || record.status].forEach((value) => {{
+            const statusColors = {{ active: 'green', expired: 'gray', cancelled: 'gray', paid: 'blue' }};
+            [record.login, record.reason, record.unlocked_at, record.expires_at].forEach((value) => {{
               const cell = document.createElement('td');
               cell.textContent = value;
               row.appendChild(cell);
             }});
+            const statusCell = document.createElement('td');
+            const pill = document.createElement('span');
+            pill.className = `fin-status fin-status-${{statusColors[record.status] || 'gray'}}`;
+            pill.textContent = statusLabels[record.status] || record.status;
+            statusCell.appendChild(pill);
+            row.appendChild(statusCell);
             const actionCell = document.createElement('td');
             if (record.status === 'active') {{
               const cancelButton = document.createElement('button');
               cancelButton.type = 'button';
+              cancelButton.className = 'btn-sm secondary';
               cancelButton.textContent = 'ENCERRAR AGORA';
               cancelButton.addEventListener('click', async () => {{
                 if (!window.confirm(`Encerrar agora a liberação temporária de ${{record.login}}?`)) return;
