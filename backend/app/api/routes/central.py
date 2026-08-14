@@ -76,9 +76,7 @@ async def central_dashboard(
         for order in all_orders
         if order.archived_at is not None and order.deleted_at is None
     ]
-    inventory = await simulated_inventory_gateway.list_items(
-        "bench-technician", organization_id
-    )
+    inventory = await simulated_inventory_gateway.list_all_items(organization_id)
     inventory_movements = simulated_inventory_gateway.list_movements(
         organization_id=organization_id
     )
@@ -213,9 +211,17 @@ async def central_dashboard(
         f"<tr><td>{escape(item.description)}</td>"
         f"<td>{item.quantity:g} {escape(item.unit)}</td>"
         f"<td>{escape(item.serial_number or '-')}</td>"
-        f"<td><form method='post' action='/api/v1/inventory/{escape(item.id)}/restock-from-central'>"
+        "<td>"
+        + (
+            f"<span class='fin-status fin-status-blue'>{escape(technician_names[item.technician_id])}</span>"
+            if item.technician_id and item.technician_id in technician_names
+            else "<span class='fin-status fin-status-gray'>Estoque central</span>"
+        )
+        + "</td>"
+        f"<td><form class='wo-inline-form' method='post' action='/api/v1/inventory/{escape(item.id)}/restock-from-central'>"
         f"<input class='quantity' name='quantity' type='number' min='0.1' max='10000' step='0.1' required placeholder='Qtd.'>"
-        f"<button type='submit'>REPOR</button></form></td></tr>"
+        f"<select name='technician_id'><option value=''>Estoque central</option>{technician_options}</select>"
+        "<button class='btn-sm' type='submit'>REPOR</button></form></td></tr>"
         for item in inventory
     )
     movement_rows = "".join(
@@ -1003,7 +1009,7 @@ async def central_dashboard(
         <p>As ordens arquivadas não aparecem na lista operacional, mas continuam disponíveis para consulta e restauração.</p>
         <table><thead><tr><th>OS</th><th>Cliente</th><th>Status</th><th>Arquivada em UTC</th><th>Ação</th></tr></thead><tbody>{archived_order_rows}</tbody></table>
       </section>
-      <section class="module-panel" data-module="inventory"><h2>Estoque do técnico</h2><table><thead><tr><th>Item</th><th>Saldo</th><th>Série</th><th>Reposição</th></tr></thead><tbody>{inventory_rows}</tbody></table></section>
+      <section class="module-panel" data-module="inventory"><h2>Estoque do técnico</h2><table><thead><tr><th>Item</th><th>Saldo</th><th>Série</th><th>Técnico</th><th>Reposição</th></tr></thead><tbody>{inventory_rows}</tbody></table></section>
       <section class="module-panel" data-module="materials"><h2>Histórico de materiais</h2><table><thead><tr><th>Item</th><th>Movimento</th><th>Quantidade</th><th>OS</th><th>Origem</th><th>Data UTC</th></tr></thead><tbody>{movement_rows}</tbody></table></section>
       <section class="module-panel" data-module="mkauth">
         <h2>Integração MK-AUTH</h2>

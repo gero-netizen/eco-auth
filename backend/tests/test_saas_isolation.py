@@ -145,17 +145,32 @@ def test_inventory_is_isolated_by_organization(tmp_path) -> None:
     gateway = SimulatedInventoryGateway(f"sqlite:///{tmp_path / 'inventory.db'}")
     default_id = get_settings().default_organization_id
 
+    # O catálogo central (não distribuído) tem os 3 itens semeados por padrão.
+    catalog_items = asyncio.run(gateway.list_all_items(default_id))
+    assert len(catalog_items) == 3
+    assert asyncio.run(gateway.list_all_items("provedor-dois")) == []
+
+    # Um técnico não vê nada até que material seja distribuído para ele.
     default_items = asyncio.run(gateway.list_items("tech-1", default_id))
     other_items = asyncio.run(gateway.list_items("tech-2", "provedor-dois"))
-
-    assert len(default_items) == 3
+    assert default_items == []
     assert other_items == []
-    before = next(item for item in default_items if item.id == "fast-connector")
-    asyncio.run(
-        gateway.consume(
-            "fast-connector", 1, before.version, organization_id=default_id
+
+    distributed = asyncio.run(
+        gateway.restock(
+            "fast-connector", 5, organization_id=default_id, technician_id="tech-1"
         )
     )
+    assert distributed.technician_id == "tech-1"
+
+    tech_items = asyncio.run(gateway.list_items("tech-1", default_id))
+    assert len(tech_items) == 1
+    asyncio.run(
+        gateway.consume(
+            distributed.id, 1, distributed.version, organization_id=default_id
+        )
+    )
+    # A distribuição para um provedor nunca aparece no estoque de outro.
     assert asyncio.run(gateway.list_items("tech-2", "provedor-dois")) == []
 
 

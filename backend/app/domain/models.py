@@ -71,3 +71,4 @@ class InventoryItem(BaseModel):
     unit: str
     serial_number: str | None = None
     version: int = 1
+    technician_id: str | None = None

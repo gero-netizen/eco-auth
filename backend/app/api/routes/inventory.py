@@ -20,11 +20,11 @@ class RestockRequest(BaseModel):
 
 
 async def restock_item(
-    item_id: str, quantity: float, organization_id: str
+    item_id: str, quantity: float, organization_id: str, technician_id: str | None = None
 ) -> InventoryItem:
     try:
         item = await simulated_inventory_gateway.restock(
-            item_id, quantity, organization_id
+            item_id, quantity, organization_id, technician_id=technician_id
         )
     except (KeyError, ValueError) as error:
         raise HTTPException(422, str(error)) from error
@@ -42,11 +42,10 @@ async def restock_item(
 
 @router.get("", response_model=list[InventoryItem], dependencies=[Depends(require_technician)])
 async def list_inventory(
-    technician_id: str = "bench-technician",
     technician: dict = Depends(require_technician),
 ) -> list[InventoryItem]:
     return await simulated_inventory_gateway.list_items(
-        technician_id, technician["organization_id"]
+        technician["id"], technician["organization_id"]
     )
 
 
@@ -57,7 +56,8 @@ async def restock_inventory_item(
     technician: dict = Depends(require_technician),
 ) -> InventoryItem:
     return await restock_item(
-        item_id, request.quantity, technician["organization_id"]
+        item_id, request.quantity, technician["organization_id"],
+        technician_id=technician["id"],
     )
 
 
@@ -72,5 +72,8 @@ async def restock_from_central(
         quantity = float(fields.get("quantity", [""])[0])
     except ValueError as error:
         raise HTTPException(422, "invalid_restock_quantity") from error
-    await restock_item(item_id, quantity, session["organization"]["id"])
-    return RedirectResponse("/central", status_code=303)
+    technician_id = fields.get("technician_id", [""])[0].strip() or None
+    await restock_item(
+        item_id, quantity, session["organization"]["id"], technician_id=technician_id
+    )
+    return RedirectResponse("/central#inventory", status_code=303)

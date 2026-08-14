@@ -810,6 +810,9 @@ def test_inventory_consumption_is_applied_once() -> None:
     )
     assert restocked.status_code == 200
     connector_before = restocked.json()
+    # A reposição pelo próprio técnico cria/usa a linha de estoque dele —
+    # o id retornado passa a ser esse, não mais o item central "fast-connector".
+    technician_item_id = connector_before["id"]
     payload = {
         "device_id": str(uuid4()),
         "operations": [{
@@ -819,7 +822,7 @@ def test_inventory_consumption_is_applied_once() -> None:
             "kind": "consume",
             "base_version": connector_before["version"],
             "occurred_at": "2026-08-03T12:00:00Z",
-            "payload": {"item_id": "fast-connector", "quantity": 1},
+            "payload": {"item_id": technician_item_id, "quantity": 1},
         }],
     }
     first = client.post("/api/v1/sync/push", json=payload).json()["results"][0]
@@ -827,27 +830,26 @@ def test_inventory_consumption_is_applied_once() -> None:
     assert first["status"] == "accepted"
     assert second["status"] == "duplicate"
     inventory = client.get("/api/v1/inventory").json()
-    connector = next(item for item in inventory if item["id"] == "fast-connector")
+    connector = next(item for item in inventory if item["id"] == technician_item_id)
     assert connector["quantity"] == connector_before["quantity"] - 1
 
 
 def test_central_restock_is_published_for_mobile_sync() -> None:
-    before = next(
-        item
-        for item in client.get("/api/v1/inventory").json()
-        if item["id"] == "drop-cable"
-    )
+    before = client.post(
+        "/api/v1/inventory/drop-cable/restock", json={"quantity": 5}
+    ).json()
     restocked = client.post(
         "/api/v1/inventory/drop-cable/restock", json={"quantity": 10}
     )
     assert restocked.status_code == 200
+    assert restocked.json()["id"] == before["id"]
     assert restocked.json()["quantity"] == before["quantity"] + 10
     assert restocked.json()["version"] == before["version"] + 1
 
     pulled = client.get("/api/v1/sync/pull", params={"cursor": "0"})
     assert any(
         change["entity_type"] == "inventory_item"
-        and change["entity_id"] == "drop-cable"
+        and change["entity_id"] == before["id"]
         for change in pulled.json()["changes"]
     )
     central = client.get("/central")

@@ -53,6 +53,7 @@ class SimulatedInventoryGateway:
                     unit TEXT NOT NULL,
                     serial_number TEXT,
                     version INTEGER NOT NULL,
+                    technician_id TEXT,
                     PRIMARY KEY (organization_id, id)
                 )
                 """
@@ -100,6 +101,13 @@ class SimulatedInventoryGateway:
                     (get_settings().default_organization_id,),
                 )
                 connection.execute("DROP TABLE simulated_inventory_movements_legacy")
+            inventory_current_columns = db.get_existing_columns(
+                connection, "simulated_inventory", self._database_url
+            )
+            if "technician_id" not in inventory_current_columns:
+                connection.execute(
+                    "ALTER TABLE simulated_inventory ADD COLUMN technician_id TEXT"
+                )
             for item in self._seed_items():
                 connection.execute(
                     """
@@ -146,17 +154,38 @@ class SimulatedInventoryGateway:
             id=row["id"], sku=row["sku"], description=row["description"],
             quantity=row["quantity"], unit=row["unit"],
             serial_number=row["serial_number"], version=row["version"],
+            technician_id=row["technician_id"],
         )
 
     async def list_items(
         self, technician_id: str, organization_id: str | None = None
     ) -> list[InventoryItem]:
+        """Estoque de um técnico específico — usado pelo app do técnico.
+        Cada técnico só vê o material que está com ele."""
         current_organization_id = organization_id or get_current_organization()
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM simulated_inventory
-                WHERE organization_id = ? ORDER BY description
+                WHERE organization_id = ? AND technician_id = ?
+                ORDER BY description
+                """,
+                (current_organization_id, technician_id),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    async def list_all_items(
+        self, organization_id: str | None = None
+    ) -> list[InventoryItem]:
+        """Todo o estoque da organização, de todos os técnicos e do estoque
+        central ainda não distribuído — usado pela Central."""
+        current_organization_id = organization_id or get_current_organization()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM simulated_inventory
+                WHERE organization_id = ?
+                ORDER BY description, technician_id
                 """,
                 (current_organization_id,),
             ).fetchall()
@@ -200,20 +229,75 @@ class SimulatedInventoryGateway:
         return updated
 
     async def restock(
-        self, item_id: str, quantity: float, organization_id: str | None = None
+        self,
+        item_id: str,
+        quantity: float,
+        organization_id: str | None = None,
+        technician_id: str | None = None,
     ) -> InventoryItem:
+        """Repõe estoque. Se um técnico for informado, o material é
+        distribuído para o estoque dele especificamente — cria uma linha
+        própria para esse técnico se ainda não existir uma. Sem técnico,
+        volta para o estoque central (ainda não distribuído)."""
         current_organization_id = organization_id or get_current_organization()
         if quantity <= 0:
             raise ValueError("invalid_restock_quantity")
-        item = await self._item(item_id, current_organization_id)
+        source_item = await self._item(item_id, current_organization_id)
+        target_item = await self._find_or_create_for_technician(
+            source_item, technician_id, current_organization_id
+        )
         updated = await self._set_quantity(
-            item, item.quantity + quantity, current_organization_id
+            target_item, target_item.quantity + quantity, current_organization_id
         )
         self.record_movement(
-            str(uuid4()), item_id, None, "restock", quantity, "central",
+            str(uuid4()), updated.id, None, "restock", quantity, "central",
             current_organization_id,
         )
         return updated
+
+    async def _find_or_create_for_technician(
+        self,
+        source_item: InventoryItem,
+        technician_id: str | None,
+        organization_id: str,
+    ) -> InventoryItem:
+        if source_item.technician_id == technician_id:
+            return source_item
+        with self._connect() as connection:
+            if technician_id is None:
+                row = connection.execute(
+                    """SELECT * FROM simulated_inventory
+                    WHERE organization_id = ? AND sku = ? AND technician_id IS NULL""",
+                    (organization_id, source_item.sku),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """SELECT * FROM simulated_inventory
+                    WHERE organization_id = ? AND sku = ? AND technician_id = ?""",
+                    (organization_id, source_item.sku, technician_id),
+                ).fetchone()
+            if row is not None:
+                return self._from_row(row)
+            new_item = InventoryItem(
+                id=str(uuid4()), sku=source_item.sku,
+                description=source_item.description, quantity=0.0,
+                unit=source_item.unit, serial_number=None, version=1,
+                technician_id=technician_id,
+            )
+            connection.execute(
+                """
+                INSERT INTO simulated_inventory (
+                    organization_id, id, sku, description, quantity,
+                    unit, serial_number, version, technician_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    organization_id, new_item.id, new_item.sku,
+                    new_item.description, new_item.quantity, new_item.unit,
+                    new_item.serial_number, new_item.version, technician_id,
+                ),
+            )
+            return new_item
 
     def record_movement(
         self,
