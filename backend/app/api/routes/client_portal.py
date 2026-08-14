@@ -462,7 +462,7 @@ async def client_portal(
     )
 
     # ---------- Chamados ----------
-    requests = list_support_requests(customer["id"], organization_id)
+    requests = list_support_requests(customer["id"], organization_id, include_archived=True)
     orders = {
         order.id: order
         for order in await simulated_mkauth_gateway.list_work_orders("bench-technician", organization_id)
@@ -794,7 +794,7 @@ async def client_support_detail(
     organization_id = organization["id"]
     support_request = next(
         (
-            item for item in list_support_requests(customer["id"], organization_id)
+            item for item in list_support_requests(customer["id"], organization_id, include_archived=True)
             if item["id"] == request_id
         ),
         None,
@@ -870,7 +870,7 @@ async def rate_client_support(
     support_request = next(
         (
             item
-            for item in list_support_requests(customer["id"], organization_id)
+            for item in list_support_requests(customer["id"], organization_id, include_archived=True)
             if item["id"] == request_id
         ),
         None,

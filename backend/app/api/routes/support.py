@@ -99,6 +99,10 @@ def _initialize() -> None:
             connection.execute(
                 "ALTER TABLE support_requests ADD COLUMN forwarded_to TEXT"
             )
+        if "archived_at" not in columns:
+            connection.execute(
+                "ALTER TABLE support_requests ADD COLUMN archived_at TEXT"
+            )
 
 
 _initialize()
@@ -107,6 +111,8 @@ _initialize()
 def list_support_requests(
     customer_id: str | None = None,
     organization_id: str | None = None,
+    include_archived: bool = False,
+    only_archived: bool = False,
 ) -> list[dict]:
     current_organization_id = organization_id or get_current_organization()
     query = "SELECT * FROM support_requests WHERE organization_id = ?"
@@ -114,10 +120,58 @@ def list_support_requests(
     if customer_id is not None:
         query += " AND customer_id = ?"
         parameters = (current_organization_id, customer_id)
+    if only_archived:
+        query += " AND archived_at IS NOT NULL"
+    elif not include_archived:
+        query += " AND archived_at IS NULL"
     query += " ORDER BY id DESC"
     with _connect() as connection:
         rows = connection.execute(query, parameters).fetchall()
     return [dict(row) for row in rows]
+
+
+def archive_support_request(request_id: int, organization_id: str | None = None) -> None:
+    current_organization_id = organization_id or get_current_organization()
+    with _connect() as connection:
+        result = connection.execute(
+            "UPDATE support_requests SET archived_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND organization_id = ?",
+            (request_id, current_organization_id),
+        )
+        if result.rowcount == 0:
+            raise KeyError("support_request_not_found")
+
+
+def unarchive_support_request(request_id: int, organization_id: str | None = None) -> None:
+    current_organization_id = organization_id or get_current_organization()
+    with _connect() as connection:
+        result = connection.execute(
+            "UPDATE support_requests SET archived_at = NULL "
+            "WHERE id = ? AND organization_id = ?",
+            (request_id, current_organization_id),
+        )
+        if result.rowcount == 0:
+            raise KeyError("support_request_not_found")
+
+
+def delete_support_request(request_id: int, organization_id: str | None = None) -> None:
+    """Exclui definitivamente um chamado. Por segurança, só permite excluir
+    chamados já arquivados — evita apagar por engano algo ainda em
+    andamento (mesma regra usada para excluir técnicos)."""
+    current_organization_id = organization_id or get_current_organization()
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT archived_at FROM support_requests WHERE id = ? AND organization_id = ?",
+            (request_id, current_organization_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError("support_request_not_found")
+        if row["archived_at"] is None:
+            raise ValueError("archive_before_deleting")
+        connection.execute(
+            "DELETE FROM support_requests WHERE id = ? AND organization_id = ?",
+            (request_id, current_organization_id),
+        )
 
 
 def create_support_request(
@@ -293,3 +347,48 @@ async def convert_support_request(
                 (order.id, request_id, organization_id),
             )
     return RedirectResponse("/central", status_code=303)
+
+
+@router.post("/central/chamados/{request_id}/arquivar")
+async def archive_support_request_route(
+    request_id: int,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    try:
+        archive_support_request(request_id, organization_id)
+    except KeyError as error:
+        raise HTTPException(404, str(error)) from error
+    return RedirectResponse("/central#support", status_code=303)
+
+
+@router.post("/central/chamados/{request_id}/restaurar")
+async def restore_support_request_route(
+    request_id: int,
+    session: dict = Depends(
+        require_central_roles("owner", "admin", "attendant")
+    ),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    try:
+        unarchive_support_request(request_id, organization_id)
+    except KeyError as error:
+        raise HTTPException(404, str(error)) from error
+    return RedirectResponse("/central#support-archived", status_code=303)
+
+
+@router.post("/central/chamados/{request_id}/excluir")
+async def delete_support_request_route(
+    request_id: int,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    try:
+        delete_support_request(request_id, organization_id)
+    except KeyError as error:
+        raise HTTPException(404, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return RedirectResponse("/central#support-archived", status_code=303)

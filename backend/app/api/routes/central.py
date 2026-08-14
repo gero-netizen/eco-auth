@@ -411,22 +411,25 @@ async def central_dashboard(
         if draft["status"] == "approved":
             final_answer = draft["edited_answer"] or draft["answer"]
             return (
-                "<tr class='ai-panel-row'><td colspan='7'><div class='ai-panel ai-panel-done'>"
-                f"<b>Resposta aprovada e enviada ao cliente</b> "
-                f"({escape(draft['reviewed_by_name'] or '')} em {escape(draft['reviewed_at'] or '')})"
-                f"<p>{escape(final_answer)}</p></div></td></tr>"
+                "<tr class='ai-panel-row'><td colspan='7'>"
+                "<details class='ai-details'><summary class='ai-summary-done'>"
+                "✅ Resposta aprovada e enviada ao cliente"
+                f" — {escape(draft['reviewed_by_name'] or '')} em {escape(draft['reviewed_at'] or '')}</summary>"
+                f"<div class='ai-panel ai-panel-done'><p>{escape(final_answer)}</p></div></details></td></tr>"
             )
         if draft["status"] == "rejected":
             return (
-                "<tr class='ai-panel-row'><td colspan='7'><div class='ai-panel ai-panel-done'>"
-                f"<b>Rascunho rejeitado</b> por {escape(draft['reviewed_by_name'] or '')} "
-                "— aguardando atendimento manual.</div></td></tr>"
+                "<tr class='ai-panel-row'><td colspan='7'>"
+                "<details class='ai-details'><summary class='ai-summary-done'>"
+                f"✕ Rascunho rejeitado por {escape(draft['reviewed_by_name'] or '')} "
+                "— aguardando atendimento manual</summary></details></td></tr>"
             )
         if draft["status"] == "forwarded":
             return (
-                "<tr class='ai-panel-row'><td colspan='7'><div class='ai-panel ai-panel-done'>"
-                f"<b>Encaminhado para:</b> {escape(CATEGORY_LABELS.get(draft['forwarded_to'], draft['forwarded_to'] or ''))} "
-                f"por {escape(draft['reviewed_by_name'] or '')}</div></td></tr>"
+                "<tr class='ai-panel-row'><td colspan='7'>"
+                "<details class='ai-details'><summary class='ai-summary-done'>"
+                f"↪ Encaminhado para {escape(CATEGORY_LABELS.get(draft['forwarded_to'], draft['forwarded_to'] or ''))} "
+                f"por {escape(draft['reviewed_by_name'] or '')}</summary></details></td></tr>"
             )
         low_confidence_warning = (
             "<p class='alert'>Confiança baixa: escreva a resposta antes de aprovar "
@@ -434,35 +437,66 @@ async def central_dashboard(
             if draft["confidence"] == "low" else ""
         )
         return (
-            "<tr class='ai-panel-row'><td colspan='7'><div class='ai-panel'>"
-            f"<p><b>Sugestão do assistente</b> — categoria: {escape(category_label)} • "
-            f"confiança: {escape(confidence_label)} • fonte: "
-            f"{escape(draft['source_title'] or 'nenhuma, escalar para atendente')}</p>"
+            "<tr class='ai-panel-row'><td colspan='7'>"
+            "<details class='ai-details'><summary>"
+            f"🤖 Sugestão da IA disponível — categoria: {escape(category_label)} • "
+            f"confiança: {escape(confidence_label)}</summary>"
+            "<div class='ai-panel'>"
+            f"<p><small>Fonte: {escape(draft['source_title'] or 'nenhuma, escalar para atendente')}</small></p>"
             f"<form method='post' action='/central/chamados/{item['id']}/ia/aprovar' class='ai-review-form'>"
             f"<textarea name='edited_answer' maxlength='1000' placeholder='Edite a resposta se necessário'>{escape(draft['answer'])}</textarea>"
             f"{low_confidence_warning}"
-            "<button type='submit'>APROVAR E RESPONDER</button></form>"
+            "<button class='btn-sm' type='submit'>APROVAR E RESPONDER</button></form>"
             f"<form method='post' action='/central/chamados/{item['id']}/ia/rejeitar' class='ai-review-form'>"
-            "<button type='submit' class='secondary'>REJEITAR</button></form>"
+            "<button class='btn-sm secondary' type='submit'>REJEITAR</button></form>"
             f"<form method='post' action='/central/chamados/{item['id']}/ia/encaminhar' class='ai-review-form'>"
             f"<select name='forwarded_to' required><option value=''>Encaminhar para o setor…</option>{forward_sector_options}</select>"
-            "<button type='submit' class='secondary'>ENCAMINHAR</button></form>"
-            "</div></td></tr>"
+            "<button class='btn-sm secondary' type='submit'>ENCAMINHAR</button></form>"
+            "</div></details></td></tr>"
         )
 
+    _support_status_color = {"open": "amber", "answered": "blue", "converted": "green"}
+    _support_status_label = {"open": "Aberto", "answered": "Respondido", "converted": "Convertido em OS"}
     support_rows = "".join(
         f"<tr><td>#{item['id']}</td><td>{escape(item['subject'])}</td>"
-        f"<td>{escape(item['description'])}</td><td>{escape(item['status'])}</td>"
+        f"<td>{escape(item['description'])}</td>"
+        f"<td><span class='fin-status fin-status-{_support_status_color.get(item['status'], 'gray')}'>"
+        f"{escape(_support_status_label.get(item['status'], item['status']))}</span></td>"
         f"<td>{escape(item['work_order_id'] or '-')}</td>"
-        f"<td>{('★' * item['rating']) if item.get('rating') else '-'}</td><td>"
+        f"<td>{('★' * item['rating']) if item.get('rating') else '-'}</td>"
+        f"<td><div class='row-actions'>"
         + (
-            f"<form method='post' action='/central/chamados/{item['id']}/gerar-os'><button type='submit'>GERAR OS</button></form>"
-            if item["work_order_id"] is None else "Convertido"
+            f"<form method='post' action='/central/chamados/{item['id']}/gerar-os'>"
+            "<button class='btn-sm' type='submit'>GERAR OS</button></form>"
+            if item["work_order_id"] is None else "<span class='fin-status fin-status-green'>Convertido</span>"
         )
-        + "</td></tr>"
+        + f"<form method='post' action='/central/chamados/{item['id']}/arquivar' "
+        "onsubmit=\"return confirm('Arquivar este chamado? Ele sai da lista principal, mas continua disponível em Chamados arquivados.')\">"
+        "<button class='btn-icon secondary' type='submit' title='Arquivar'>"
+        "<i data-lucide=\"archive\" class=\"w-3.5 h-3.5\"></i></button></form>"
+        "</div></td></tr>"
         + support_ai_panel(item)
         for item in support_requests[:10]
     ) or "<tr><td colspan='7'>Nenhum chamado recebido.</td></tr>"
+    archived_support_requests = list_support_requests(
+        organization_id=organization_id, only_archived=True
+    )
+    archived_support_rows = "".join(
+        f"<tr><td>#{item['id']}</td><td>{escape(item['subject'])}</td>"
+        f"<td>{escape(item['description'])}</td>"
+        f"<td><span class='fin-status fin-status-{_support_status_color.get(item['status'], 'gray')}'>"
+        f"{escape(_support_status_label.get(item['status'], item['status']))}</span></td>"
+        "<td><div class='row-actions'>"
+        f"<form method='post' action='/central/chamados/{item['id']}/restaurar'>"
+        "<button class='btn-icon secondary' type='submit' title='Restaurar'>"
+        "<i data-lucide=\"rotate-ccw\" class=\"w-3.5 h-3.5\"></i></button></form>"
+        f"<form method='post' action='/central/chamados/{item['id']}/excluir' "
+        "onsubmit=\"return confirm('Excluir este chamado definitivamente? Esta ação não pode ser desfeita.')\">"
+        "<button class='btn-icon' style='background:#b42318' type='submit' title='Excluir definitivamente'>"
+        "<i data-lucide=\"trash-2\" class=\"w-3.5 h-3.5\"></i></button></form>"
+        "</div></td></tr>"
+        for item in archived_support_requests[:30]
+    ) or "<tr><td colspan='5'>Nenhum chamado arquivado.</td></tr>"
     ai_knowledge_rows = "".join(
         f"<tr><td>{escape(item['title'])}</td><td>{escape(item['content'])}</td>"
         f"<td>{escape(CATEGORY_LABELS.get(item['category'], item['category']))}</td>"
@@ -785,6 +819,13 @@ async def central_dashboard(
     .row-actions {{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }}
     .row-actions form {{ margin:0; }}
     .btn-icon {{ width:30px; height:30px; padding:0 !important; display:inline-flex; align-items:center; justify-content:center; border-radius:7px !important; flex-shrink:0; }}
+    .ai-details {{ margin:6px 0; }}
+    .ai-details summary {{ list-style:none; cursor:pointer; padding:10px 14px; border-radius:8px; background:#f5fbfa; border-left:4px solid var(--green); font-size:13px; font-weight:600; color:var(--green-dark); }}
+    .ai-details summary::-webkit-details-marker {{ display:none; }}
+    .ai-details summary::before {{ content:'▸'; display:inline-block; margin-right:8px; transition:transform .15s ease; }}
+    .ai-details[open] summary::before {{ transform:rotate(90deg); }}
+    .ai-details summary.ai-summary-done {{ border-left-color:#6b7280; background:#f8f9fa; color:var(--muted); }}
+    .ai-details .ai-panel {{ border-radius:0 0 8px 8px; margin-top:0; }}
     .button-link {{ display:inline-block; border-radius:8px; padding:8px 10px; background:var(--green); color:white; text-decoration:none; white-space:nowrap; }}
     .secondary-link {{ background:#6b7280; }}
     .danger-link {{ background:#b42318; }}
@@ -908,6 +949,7 @@ async def central_dashboard(
         </div></details>
         <details class="menu-category"><summary>Atendimento</summary><div class="menu-items">
           <button class="menu-button" type="button" data-target="support"><i data-lucide="headphones" class="w-4 h-4"></i> Chamados do portal do cliente</button>
+          <button class="menu-button" type="button" data-target="support-archived"><i data-lucide="archive" class="w-4 h-4"></i> Chamados arquivados</button>
           <button class="menu-button" type="button" data-target="mkauth-tickets"><i data-lucide="message-square" class="w-4 h-4"></i> Chamados MK-AUTH</button>
           <button class="menu-button" type="button" data-target="whatsapp"><i data-lucide="message-circle" class="w-4 h-4"></i> WhatsApp</button>
           <button class="menu-button" type="button" data-target="ai-support"><i data-lucide="bot" class="w-4 h-4"></i> Assistente IA</button>
@@ -1185,6 +1227,11 @@ async def central_dashboard(
       <section class="module-panel" data-module="support">
         <h2>Chamados do portal do cliente</h2>
         <table><thead><tr><th>Número</th><th>Assunto</th><th>Descrição</th><th>Situação</th><th>OS</th><th>Avaliação</th><th>Ação</th></tr></thead><tbody>{support_rows}</tbody></table>
+      </section>
+      <section class="module-panel" data-module="support-archived">
+        <h2>Chamados arquivados</h2>
+        <p>Chamados arquivados saem da lista principal, mas continuam disponíveis para consulta e restauração.</p>
+        <table><thead><tr><th>Número</th><th>Assunto</th><th>Descrição</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{archived_support_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="ai-support">
         <h2>Assistente IA de atendimento</h2>

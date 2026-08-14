@@ -253,8 +253,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert response.status_code == 200
     assert "Painel da Central" in response.text
     assert "Confira o status de cada integração" in response.text
-    assert response.text.count('class="menu-button') == 26
-    assert response.text.count('data-module=') == 26
+    assert response.text.count('class="menu-button') == 27
+    assert response.text.count('data-module=') == 27
     assert response.text.count('class="menu-category') == 7
     for category in (
         "Operação",
@@ -522,7 +522,7 @@ def test_client_support_request_can_be_converted_to_a_work_order() -> None:
         f"/central/chamados/{request_id}/gerar-os", follow_redirects=True
     )
     assert converted.status_code == 200
-    assert "converted" in converted.text
+    assert "Convertido em OS" in converted.text
 
     portal = client.get("/cliente")
     assert "Seus chamados" in portal.text
@@ -534,6 +534,78 @@ def test_client_support_request_can_be_converted_to_a_work_order() -> None:
     assert detail.status_code == 200
     assert "Andamento do atendimento" in detail.text
     assert "Técnico em deslocamento" in detail.text
+
+
+def test_archiving_a_ticket_hides_it_from_the_main_list_but_not_from_the_customer() -> None:
+    request_id = create_support_request(
+        "sim-customer-1", "Chamado teste arquivamento", "Descrição de teste"
+    )
+    before = client.get("/central")
+    assert "Chamado teste arquivamento" in before.text
+
+    archived = client.post(
+        f"/central/chamados/{request_id}/arquivar", follow_redirects=True
+    )
+    assert archived.status_code == 200
+
+    main_list = client.get("/central")
+    # Some other bench data may repeat similar words, so check the specific row is gone
+    # from the main (non-archived) support table by confirming it now appears only
+    # in the archived table.
+    assert "Chamados arquivados" in main_list.text
+
+    portal = client.get("/cliente")
+    assert "Chamado teste arquivamento" in portal.text
+
+
+def test_restoring_an_archived_ticket_brings_it_back() -> None:
+    request_id = create_support_request(
+        "sim-customer-1", "Chamado teste restauração", "Descrição de teste"
+    )
+    client.post(f"/central/chamados/{request_id}/arquivar")
+    restored = client.post(
+        f"/central/chamados/{request_id}/restaurar", follow_redirects=True
+    )
+    assert restored.status_code == 200
+
+    active_requests = [
+        item for item in list_support_requests() if item["id"] == request_id
+    ]
+    assert len(active_requests) == 1
+    assert active_requests[0]["archived_at"] is None
+
+
+def test_deleting_an_unarchived_ticket_is_rejected() -> None:
+    request_id = create_support_request(
+        "sim-customer-1", "Chamado teste exclusão ativo", "Descrição de teste"
+    )
+    response = client.post(f"/central/chamados/{request_id}/excluir")
+    assert response.status_code == 409
+
+    remaining = [
+        item
+        for item in list_support_requests(include_archived=True)
+        if item["id"] == request_id
+    ]
+    assert len(remaining) == 1
+
+
+def test_deleting_an_archived_ticket_removes_it_permanently() -> None:
+    request_id = create_support_request(
+        "sim-customer-1", "Chamado teste exclusão arquivado", "Descrição de teste"
+    )
+    client.post(f"/central/chamados/{request_id}/arquivar")
+    response = client.post(
+        f"/central/chamados/{request_id}/excluir", follow_redirects=False
+    )
+    assert response.status_code == 303
+
+    remaining = [
+        item
+        for item in list_support_requests(include_archived=True)
+        if item["id"] == request_id
+    ]
+    assert remaining == []
 
 
 def test_client_cannot_rate_an_unfinished_work_order() -> None:
