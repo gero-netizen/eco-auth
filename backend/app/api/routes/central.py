@@ -170,12 +170,14 @@ async def central_dashboard(
         for order in orders
     )
     low_stock = sum(item.quantity <= 5 for item in inventory)
+    priority_labels = {"low": "Baixa", "normal": "Normal", "high": "Alta", "urgent": "Urgente"}
     order_rows = "".join(
-        f"<tr><td>{escape(order.code)}</td>"
+        f"<tr><td><b>{escape(order.code)}</b></td>"
         f"<td>{escape(order.customer_name)}</td>"
-        f"<td><span class='status'>{escape(order.status.value)}</span></td>"
-        f"<td><b>{escape({'low': 'Baixa', 'normal': 'Normal', 'high': 'Alta', 'urgent': 'Urgente'}.get(order.priority, order.priority))}</b></td>"
-        f"<td><form method='post' action='/central/work-orders/{escape(order.id)}/planning'>"
+        f"<td><span class='wo-status wo-status-{escape(order.status.value)}'>{escape(order.status.value)}</span></td>"
+        f"<td><span class='wo-priority wo-priority-{escape(order.priority)}'><span class='wo-priority-dot'></span>"
+        f"{escape(priority_labels.get(order.priority, order.priority))}</span></td>"
+        f"<td><form class='wo-inline-form' method='post' action='/central/work-orders/{escape(order.id)}/planning'>"
         f"<select name='priority'>"
         + "".join(
             f"<option value='{value}' {'selected' if value == order.priority else ''}>{label}</option>"
@@ -183,8 +185,9 @@ async def central_dashboard(
         )
         + f"</select><input name='scheduled_at' type='datetime-local' value='{order.scheduled_at.astimezone().strftime('%Y-%m-%dT%H:%M') if order.scheduled_at else ''}'>"
         f"<button type='submit'>SALVAR</button></form></td>"
-        f"<td>{escape(technician_names.get(order.technician_id, 'Não atribuído'))}"
-        f"<form method='post' action='/central/work-orders/{escape(order.id)}/assign'>"
+        f"<td><div class='wo-tech'><span class='wo-tech-avatar'>{escape((technician_names.get(order.technician_id, '?') or '?')[:1].upper())}</span>"
+        f"{escape(technician_names.get(order.technician_id, 'Não atribuído'))}</div>"
+        f"<form class='wo-inline-form' method='post' action='/central/work-orders/{escape(order.id)}/assign'>"
         f"<select name='technician_id'>"
         + "".join(
             f"<option value='{escape(item['id'])}' {'selected' if item['id'] == order.technician_id else ''}>"
@@ -192,9 +195,9 @@ async def central_dashboard(
             for item in active_technicians
         )
         + "</select><button type='submit'>TRANSFERIR</button></form></td>"
-        f"<td><a class='button-link' href='/central/work-orders/{escape(order.id)}/evidence'>Comprovações</a> "
+        f"<td><div class='wo-actions'><a class='button-link' href='/central/work-orders/{escape(order.id)}/evidence'>Comprovações</a> "
         f"<a class='button-link secondary-link' href='/central/work-orders/{escape(order.id)}/report'>Relatório</a>"
-        f"{mkauth_ticket_action(order)}{archive_action(order)}{delete_action(order)}</td></tr>"
+        f"{mkauth_ticket_action(order)}{archive_action(order)}{delete_action(order)}</div></td></tr>"
         for order in orders
     )
     archived_order_rows = "".join(
@@ -764,6 +767,33 @@ async def central_dashboard(
     .top-badge .dot {{ width:6px; height:6px; border-radius:999px; background:currentColor; }}
     .search-input {{ flex:1; max-width:420px; background:#f4f6f7; border:1px solid transparent; border-radius:9px; padding:9px 14px; font-size:13.5px; }}
     .search-input:focus {{ outline:none; background:white; border-color:var(--green); }}
+    .wo-form {{ background:#fafcfb; border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:20px; }}
+    .wo-form label {{ font-size:12px; font-weight:600; color:var(--muted); }}
+    .wo-form input, .wo-form select {{ margin-top:4px; }}
+    .wo-form button {{ padding:11px 20px; font-weight:700; }}
+    .wo-table {{ width:100%; border-collapse:collapse; }}
+    .wo-table th {{ text-align:left; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; padding:9px 10px; border-bottom:1px solid var(--border); }}
+    .wo-table td {{ padding:11px 10px; border-bottom:1px solid #f2f4f5; font-size:13.5px; vertical-align:middle; }}
+    .wo-status {{ font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px; display:inline-block; white-space:nowrap; }}
+    .wo-status-assigned {{ background:#dbeafe; color:#1d4ed8; }}
+    .wo-status-traveling {{ background:#cffafe; color:#0e7490; }}
+    .wo-status-arrived {{ background:#e0e7ff; color:#4338ca; }}
+    .wo-status-in_progress {{ background:#fef3c7; color:#b45309; }}
+    .wo-status-blocked {{ background:#fee2e2; color:#b91c1c; }}
+    .wo-status-completed {{ background:#d8f3dc; color:#176b2c; }}
+    .wo-status-not_completed {{ background:#f1f3f4; color:#6b7280; }}
+    .wo-priority {{ display:inline-flex; align-items:center; gap:6px; font-weight:700; font-size:12.5px; }}
+    .wo-priority-dot {{ width:7px; height:7px; border-radius:999px; flex-shrink:0; }}
+    .wo-priority-low .wo-priority-dot {{ background:#9ca3af; }}
+    .wo-priority-normal .wo-priority-dot {{ background:#3b82f6; }}
+    .wo-priority-high .wo-priority-dot {{ background:#f59e0b; }}
+    .wo-priority-urgent .wo-priority-dot {{ background:#ef4444; }}
+    .wo-tech {{ display:flex; align-items:center; gap:8px; }}
+    .wo-tech-avatar {{ width:24px; height:24px; border-radius:999px; background:var(--green); color:white; font-size:10.5px; font-weight:700; display:grid; place-items:center; flex-shrink:0; }}
+    .wo-actions {{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }}
+    .wo-inline-form {{ display:inline-flex; gap:4px; align-items:center; }}
+    .wo-inline-form select, .wo-inline-form input {{ padding:6px 8px; font-size:12px; }}
+    .wo-inline-form button {{ padding:6px 10px; font-size:11.5px; }}
     @media(max-width:850px) {{
       .dashboard-layout {{ grid-template-columns:1fr; }}
       .sidebar {{ position:static; display:block; padding:10px; }}
@@ -856,7 +886,7 @@ async def central_dashboard(
       <section class="module-panel" data-module="work-orders">
         <h2>Criar ordem de serviço</h2>
         <p>A OS será criada somente neste aplicativo e chegará ao celular na próxima sincronização. O cadastro do MK-AUTH não será alterado.</p>
-        <form class="create-order" method="post" action="/api/v1/work-orders/from-central">
+        <form class="create-order wo-form" method="post" action="/api/v1/work-orders/from-central">
           <input id="order-external-customer-id" name="external_customer_id" type="hidden">
           <input id="order-external-ticket-id" name="external_ticket_id" type="hidden">
           <label>Selecionar cliente<select id="mkauth-client-select"><option value="">Cliente manual/fictício</option></select></label>
@@ -870,7 +900,7 @@ async def central_dashboard(
           <button type="submit">CRIAR OS</button>
         </form>
         <p id="order-source-status"></p>
-        <table><thead><tr><th>OS</th><th>Cliente</th><th>Status</th><th>Prioridade</th><th>Agendamento</th><th>Técnico</th><th></th></tr></thead><tbody>{order_rows}</tbody></table>
+        <table class="wo-table"><thead><tr><th>OS</th><th>Cliente</th><th>Status</th><th>Prioridade</th><th>Agendamento</th><th>Técnico</th><th>Ações</th></tr></thead><tbody>{order_rows}</tbody></table>
       </section>
       <section class="module-panel" data-module="archived-orders">
         <h2>OS arquivadas</h2>
