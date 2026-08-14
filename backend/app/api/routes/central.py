@@ -313,12 +313,17 @@ async def central_dashboard(
             content += f"<br><span class='alert'>{escape(message['error_reason'])}</span>"
         return content
 
+    _whatsapp_status_color = {
+        "sent": "green", "failed": "red", "simulated_sent": "gray",
+        "blocked": "red", "received": "blue",
+    }
     message_rows = "".join(
         f"<tr><td>{escape(message['template'] or '-')}</td>"
         f"<td>{escape(message.get('login') or '-')}</td>"
         f"<td>{escape(message['phone'])}</td>"
         f"<td>{message_content(message)}</td>"
-        f"<td>{escape(status_labels.get(message['status'], message['status']))}</td>"
+        f"<td><span class='fin-status fin-status-{_whatsapp_status_color.get(message['status'], 'gray')}'>"
+        f"{escape(status_labels.get(message['status'], message['status']))}</span></td>"
         f"<td>{escape(message['created_at'])}</td></tr>"
         for message in messages
     ) or "<tr><td colspan='6'>Nenhuma mensagem registrada</td></tr>"
@@ -359,16 +364,24 @@ async def central_dashboard(
         contact_blocked = whatsapp_consent_store.is_blocked(organization_id, phone)
         if contact_blocked:
             return (
-                f"<div class='ai-panel'><p><b>{escape(phone)}</b></p>{history_html}"
-                "<p>Número bloqueado (opt-out). Nenhuma mensagem automática será enviada até desbloquear.</p></div>"
+                f"<details class='ai-details'><summary class='ai-summary-done'>"
+                f"🚫 {escape(phone)} — número bloqueado (opt-out)</summary>"
+                f"<div class='ai-panel ai-panel-done'>{history_html}"
+                "<p>Nenhuma mensagem automática será enviada até desbloquear.</p></div></details>"
             )
         if draft is None:
-            return f"<div class='ai-panel'><p><b>{escape(phone)}</b></p>{history_html}</div>"
+            return (
+                f"<details class='ai-details'><summary class='ai-summary-done'>"
+                f"💬 {escape(phone)} — sem sugestão pendente</summary>"
+                f"<div class='ai-panel ai-panel-done'>{history_html}</div></details>"
+            )
         if draft["status"] == "approved":
             final_answer = draft["edited_answer"] or draft["answer"]
             return (
-                f"<div class='ai-panel ai-panel-done'><p><b>{escape(phone)}</b></p>{history_html}"
-                f"<p><b>Resposta aprovada e enviada:</b> {escape(final_answer)}</p></div>"
+                f"<details class='ai-details'><summary class='ai-summary-done'>"
+                f"✅ {escape(phone)} — resposta aprovada e enviada</summary>"
+                f"<div class='ai-panel ai-panel-done'>{history_html}"
+                f"<p>{escape(final_answer)}</p></div></details>"
             )
         if draft["status"] in ("rejected", "forwarded"):
             note = (
@@ -376,24 +389,31 @@ async def central_dashboard(
                 if draft["status"] == "rejected"
                 else f"Encaminhado para: {escape(CATEGORY_LABELS.get(draft['forwarded_to'], draft['forwarded_to'] or ''))}"
             )
-            return f"<div class='ai-panel ai-panel-done'><p><b>{escape(phone)}</b></p>{history_html}<p>{note}</p></div>"
+            icon = "✕" if draft["status"] == "rejected" else "↪"
+            return (
+                f"<details class='ai-details'><summary class='ai-summary-done'>"
+                f"{icon} {escape(phone)} — {note}</summary>"
+                f"<div class='ai-panel ai-panel-done'>{history_html}</div></details>"
+            )
         low_confidence_warning = (
             "<p class='alert'>Confiança baixa: escreva a resposta antes de aprovar.</p>"
             if draft["confidence"] == "low" else ""
         )
         return (
-            f"<div class='ai-panel'><p><b>{escape(phone)}</b></p>{history_html}"
-            f"<p><b>Sugestão do assistente</b> — confiança: {escape(confidence_labels.get(draft['confidence'], draft['confidence']))} • "
-            f"fonte: {escape(draft['source_title'] or 'nenhuma, escalar para atendente')}</p>"
+            f"<details class='ai-details'><summary>"
+            f"🤖 {escape(phone)} — sugestão disponível • confiança: "
+            f"{escape(confidence_labels.get(draft['confidence'], draft['confidence']))}</summary>"
+            f"<div class='ai-panel'>{history_html}"
+            f"<p><small>Fonte: {escape(draft['source_title'] or 'nenhuma, escalar para atendente')}</small></p>"
             f"<form method='post' action='/central/whatsapp/{escape(phone)}/aprovar' class='ai-review-form'>"
             f"<textarea name='edited_answer' maxlength='1000'>{escape(draft['answer'])}</textarea>"
             f"{low_confidence_warning}"
-            "<button type='submit'>APROVAR E RESPONDER</button></form>"
+            "<button class='btn-sm' type='submit'>APROVAR E RESPONDER</button></form>"
             f"<form method='post' action='/central/whatsapp/{escape(phone)}/rejeitar' class='ai-review-form'>"
-            "<button type='submit' class='secondary'>REJEITAR</button></form>"
+            "<button class='btn-sm secondary' type='submit'>REJEITAR</button></form>"
             f"<form method='post' action='/central/whatsapp/{escape(phone)}/encaminhar' class='ai-review-form'>"
             f"<select name='forwarded_to' required><option value=''>Encaminhar para o setor…</option>{forward_sector_options}</select>"
-            "<button type='submit' class='secondary'>ENCAMINHAR</button></form></div>"
+            "<button class='btn-sm secondary' type='submit'>ENCAMINHAR</button></form></div></details>"
         )
 
     whatsapp_inbox_html = "".join(
@@ -404,7 +424,8 @@ async def central_dashboard(
         f"<tr><td>{escape(item['phone'])}</td><td>{escape(item['reason'] or '-')}</td>"
         f"<td>{escape(item['blocked_at'])}</td><td>"
         f"<form method='post' action='/central/whatsapp/{escape(item['phone'])}/desbloquear'>"
-        "<button type='submit' class='secondary'>DESBLOQUEAR</button></form></td></tr>"
+        "<button type='submit' class='btn-icon secondary' title='Desbloquear'>"
+        '<i data-lucide="lock-open" class="w-3.5 h-3.5"></i></button></form></td></tr>'
         for item in whatsapp_blocked
     ) or "<tr><td colspan='4'>Nenhum número bloqueado.</td></tr>"
 
@@ -1273,7 +1294,7 @@ async def central_dashboard(
         <h2>WhatsApp</h2>
         <p>{whatsapp_status_label()}</p>
         <h3>Configuração real (Meta WhatsApp Cloud API)</h3>
-        <form class="create-order" method="post" action="/central/whatsapp/config">
+        <form class="create-order wo-form" method="post" action="/central/whatsapp/config">
           <label><input type="checkbox" name="enabled" value="1" {'checked' if whatsapp_config.enabled else ''}> Ativar WhatsApp real para este provedor</label>
           <label>ID do número de telefone<input name="phone_number_id" value="{escape(whatsapp_config.phone_number_id)}" placeholder="Ex.: 109876543210123"></label>
           <label>ID da conta comercial (WABA)<input name="business_account_id" value="{escape(whatsapp_config.business_account_id)}" placeholder="Ex.: 123456789012345"></label>
@@ -1284,7 +1305,7 @@ async def central_dashboard(
         </form>
         <p><b>URL do webhook a cadastrar na Meta:</b> <code>/api/v1/whatsapp/webhook/{escape(session['organization']['slug'])}</code> (complete com o seu domínio na frente)</p>
         <h3>Testar envio real</h3>
-        <form class="create-order" method="post" action="/central/whatsapp/test-send">
+        <form class="create-order wo-form" method="post" action="/central/whatsapp/test-send">
           <label>Número (com DDI, ex: 5571999998888)<input name="phone" placeholder="5571999998888" required></label>
           <label>Mensagem<input name="body" maxlength="500" placeholder="Mensagem de teste" required></label>
           <button type="submit">ENVIAR TESTE</button>
@@ -1294,8 +1315,10 @@ async def central_dashboard(
         <h3>Números bloqueados (opt-out)</h3>
         <table><thead><tr><th>Número</th><th>Motivo</th><th>Bloqueado em UTC</th><th>Ação</th></tr></thead><tbody>{whatsapp_blocked_rows}</tbody></table>
         <h3>Histórico de mensagens</h3>
-        <form method="post" action="/api/v1/notifications/simulate/invoice_reminder?redirect=true"><button type="submit">Simular lembrete de fatura</button></form>
-        <form method="post" action="/api/v1/notifications/simulate/maintenance?redirect=true"><button class="secondary" type="submit">Simular aviso de manutenção</button></form>
+        <div class="row-actions">
+          <form method="post" action="/api/v1/notifications/simulate/invoice_reminder?redirect=true"><button class="btn-sm" type="submit">Simular lembrete de fatura</button></form>
+          <form method="post" action="/api/v1/notifications/simulate/maintenance?redirect=true"><button class="btn-sm secondary" type="submit">Simular aviso de manutenção</button></form>
+        </div>
         <table><thead><tr><th>Modelo</th><th>Login</th><th>Destinatário</th><th>Mensagem</th><th>Status</th><th>Data UTC</th></tr></thead><tbody>{message_rows}</tbody></table>
       </section>
       </div>
