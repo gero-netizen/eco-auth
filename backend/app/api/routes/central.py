@@ -582,13 +582,15 @@ async def central_dashboard(
         "viewer": "Somente leitura",
     }
     central_user_rows = "".join(
-        f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
+        f"<tr><td><div class='wo-tech'><span class='wo-tech-avatar'>{escape((item['name'] or '?')[:1].upper())}</span>"
+        f"{escape(item['name'])}</div></td><td>{escape(item['username'])}</td>"
         f"<td>{escape(role_labels.get(item['role'], item['role']))}</td>"
-        f"<td>{'Ativo' if item['active'] else 'Inativo'}</td><td>"
+        f"<td><span class='wo-status {'wo-status-completed' if item['active'] else 'wo-status-not_completed'}'>"
+        f"{'Ativo' if item['active'] else 'Inativo'}</span></td><td>"
         + (
             f"<form method='post' action='/central/users/{escape(item['id'])}/toggle'>"
             f"<input type='hidden' name='active' value='{'0' if item['active'] else '1'}'>"
-            f"<button class='{'secondary' if item['active'] else ''}' type='submit'>"
+            f"<button class='btn-sm {'secondary' if item['active'] else ''}' type='submit'>"
             f"{'DESATIVAR' if item['active'] else 'ATIVAR'}</button></form>"
             if can_manage_users and item["id"] != current_user["id"]
             else "-"
@@ -606,7 +608,7 @@ async def central_dashboard(
             for role in allowed_roles
         )
         central_user_form = (
-            "<form class='create-order' method='post' action='/central/users'>"
+            "<form class='create-order wo-form' method='post' action='/central/users'>"
             "<label>Nome<input name='name' minlength='3' maxlength='100' required></label>"
             "<label>Usuário<input name='username' minlength='3' maxlength='80' required></label>"
             "<label>Senha inicial<input name='password' type='password' minlength='8' maxlength='200' required></label>"
