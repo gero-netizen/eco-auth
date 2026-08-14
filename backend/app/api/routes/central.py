@@ -673,7 +673,7 @@ async def central_dashboard(
         ) or "<tr><td colspan='5'>Nenhuma ação registrada ainda.</td></tr>"
     audit_menu = (
         '<details class="menu-category"><summary>Segurança</summary><div class="menu-items">'
-        '<button class="menu-button" type="button" data-target="audit">Auditoria</button>'
+        '<button class="menu-button" type="button" data-target="audit"><i data-lucide="scroll-text" class="w-4 h-4"></i> Auditoria</button>'
         '</div></details>'
         if can_manage_users
         else ""
@@ -713,6 +713,10 @@ async def central_dashboard(
     .dashboard-layout {{ display:grid; grid-template-columns:270px minmax(0,1fr); gap:18px; align-items:start; }}
     .sidebar {{ position:sticky; top:18px; background:var(--green-dark); border-radius:14px; padding:12px; }}
     .sidebar-title {{ margin:4px 8px 10px; color:#7fa39c; font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }}
+    .sidebar-profile {{ display:flex; align-items:center; gap:10px; padding:6px 8px 16px; margin-bottom:8px; border-bottom:1px solid rgba(255,255,255,.08); }}
+    .sidebar-profile-avatar {{ width:38px; height:38px; border-radius:999px; background:var(--green); color:white; display:grid; place-items:center; font-weight:700; font-size:15px; flex-shrink:0; }}
+    .sidebar-profile-name {{ color:white; font-weight:700; font-size:13.5px; margin:0; }}
+    .sidebar-profile-role {{ display:inline-block; margin-top:3px; font-size:10.5px; font-weight:700; background:rgba(33,230,193,.18); color:#5eead4; padding:2px 9px; border-radius:999px; }}
     .menu-category {{ border-bottom:1px solid rgba(255,255,255,.08); padding:3px 0; }}
     .menu-category:last-child {{ border-bottom:0; }}
     .menu-category summary {{ list-style:none; cursor:pointer; padding:10px 9px; border-radius:9px; color:#9fc4bd; font-size:12.5px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }}
@@ -721,7 +725,8 @@ async def central_dashboard(
     .menu-category[open] summary::after {{ transform:rotate(90deg); }}
     .menu-category summary:hover {{ background:rgba(255,255,255,.06); }}
     .menu-items {{ padding:0 3px 5px; }}
-    .menu-button {{ display:block; width:100%; padding:11px 12px; margin:2px 0; border-radius:9px; background:transparent; color:#d7e6e3; text-align:left; font-weight:600; font-size:13.5px; }}
+    .menu-button {{ display:flex; align-items:center; gap:9px; width:100%; padding:11px 12px; margin:2px 0; border-radius:9px; background:transparent; color:#d7e6e3; text-align:left; font-weight:600; font-size:13.5px; }}
+    .menu-button i {{ flex-shrink:0; opacity:.85; }}
     .menu-button:hover {{ background:rgba(255,255,255,.08); color:white; }}
     .menu-button.active {{ background:var(--green); color:white; }}
     .module-area {{ min-width:0; }}
@@ -786,43 +791,50 @@ async def central_dashboard(
   <main>
     <div class="dashboard-layout">
       <nav class="sidebar" aria-label="Módulos da central">
+        <div class="sidebar-profile">
+          <div class="sidebar-profile-avatar">{escape((current_user['name'] or '?')[:1].upper())}</div>
+          <div>
+            <p class="sidebar-profile-name">{escape(current_user['name'])}</p>
+            <span class="sidebar-profile-role">{escape(role_labels[current_user['role']])}</span>
+          </div>
+        </div>
         <div class="sidebar-title">Menu da central</div>
-        <button class="menu-button active" type="button" data-target="dashboard">📊 Dashboard Principal</button>
+        <button class="menu-button active" type="button" data-target="dashboard"><i data-lucide="layout-dashboard" class="w-4 h-4"></i> Dashboard Principal</button>
         <details class="menu-category" open><summary>Operação</summary><div class="menu-items">
-          <button class="menu-button" type="button" data-target="work-orders">Criar ordem de serviço</button>
-          <button class="menu-button" type="button" data-target="archived-orders">OS arquivadas</button>
-          <button class="menu-button" type="button" data-target="inventory">Estoque do técnico</button>
-          <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
-          <button class="menu-button" type="button" data-target="technicians">Técnicos</button>
+          <button class="menu-button" type="button" data-target="work-orders"><i data-lucide="clipboard-list" class="w-4 h-4"></i> Criar ordem de serviço</button>
+          <button class="menu-button" type="button" data-target="archived-orders"><i data-lucide="archive" class="w-4 h-4"></i> OS arquivadas</button>
+          <button class="menu-button" type="button" data-target="inventory"><i data-lucide="package" class="w-4 h-4"></i> Estoque do técnico</button>
+          <button class="menu-button" type="button" data-target="materials"><i data-lucide="boxes" class="w-4 h-4"></i> Histórico de materiais</button>
+          <button class="menu-button" type="button" data-target="technicians"><i data-lucide="users" class="w-4 h-4"></i> Técnicos</button>
         </div></details>
         <details class="menu-category"><summary>Clientes</summary><div class="menu-items">
-          <button class="menu-button" type="button" data-target="portal-customers">Clientes do portal</button>
-          <button class="menu-button" type="button" data-target="mkauth-clients">Clientes MK-AUTH</button>
-          <button class="menu-button" type="button" data-target="mkauth-inactive-clients">Clientes desativados</button>
-          <button class="menu-button" type="button" data-target="mkauth-additional-clients">Clientes adicionais</button>
+          <button class="menu-button" type="button" data-target="portal-customers"><i data-lucide="user-round" class="w-4 h-4"></i> Clientes do portal</button>
+          <button class="menu-button" type="button" data-target="mkauth-clients"><i data-lucide="users-round" class="w-4 h-4"></i> Clientes MK-AUTH</button>
+          <button class="menu-button" type="button" data-target="mkauth-inactive-clients"><i data-lucide="user-x" class="w-4 h-4"></i> Clientes desativados</button>
+          <button class="menu-button" type="button" data-target="mkauth-additional-clients"><i data-lucide="user-plus" class="w-4 h-4"></i> Clientes adicionais</button>
         </div></details>
         <details class="menu-category"><summary>Financeiro</summary><div class="menu-items">
-          <button class="menu-button" type="button" data-target="financial">Financeiro e desbloqueio</button>
-          <button class="menu-button" type="button" data-target="mkauth-titles">Títulos MK-AUTH</button>
+          <button class="menu-button" type="button" data-target="financial"><i data-lucide="banknote" class="w-4 h-4"></i> Financeiro e desbloqueio</button>
+          <button class="menu-button" type="button" data-target="mkauth-titles"><i data-lucide="receipt" class="w-4 h-4"></i> Títulos MK-AUTH</button>
         </div></details>
         <details class="menu-category"><summary>Rede</summary><div class="menu-items">
-          <button class="menu-button" type="button" data-target="network">Monitoramento da rede</button>
-          <button class="menu-button" type="button" data-target="routeros-diagnostic">Diagnóstico PPPoE/RADIUS</button>
-          <button class="menu-button" type="button" data-target="provisioning">Últimos provisionamentos</button>
+          <button class="menu-button" type="button" data-target="network"><i data-lucide="activity" class="w-4 h-4"></i> Monitoramento da rede</button>
+          <button class="menu-button" type="button" data-target="routeros-diagnostic"><i data-lucide="radio" class="w-4 h-4"></i> Diagnóstico PPPoE/RADIUS</button>
+          <button class="menu-button" type="button" data-target="provisioning"><i data-lucide="settings-2" class="w-4 h-4"></i> Últimos provisionamentos</button>
         </div></details>
         <details class="menu-category"><summary>Atendimento</summary><div class="menu-items">
-          <button class="menu-button" type="button" data-target="support">Chamados do portal do cliente</button>
-          <button class="menu-button" type="button" data-target="mkauth-tickets">Chamados MK-AUTH</button>
-          <button class="menu-button" type="button" data-target="whatsapp">WhatsApp</button>
-          <button class="menu-button" type="button" data-target="ai-support">Assistente IA</button>
+          <button class="menu-button" type="button" data-target="support"><i data-lucide="headphones" class="w-4 h-4"></i> Chamados do portal do cliente</button>
+          <button class="menu-button" type="button" data-target="mkauth-tickets"><i data-lucide="message-square" class="w-4 h-4"></i> Chamados MK-AUTH</button>
+          <button class="menu-button" type="button" data-target="whatsapp"><i data-lucide="message-circle" class="w-4 h-4"></i> WhatsApp</button>
+          <button class="menu-button" type="button" data-target="ai-support"><i data-lucide="bot" class="w-4 h-4"></i> Assistente IA</button>
         </div></details>
         <details class="menu-category"><summary>Configurações</summary><div class="menu-items">
-          <button class="menu-button" type="button" data-target="mkauth">Integração MK-AUTH</button>
-          <button class="menu-button" type="button" data-target="mikrotik">Integração MikroTik</button>
-          <button class="menu-button" type="button" data-target="ftth">Mapa e viabilidade FTTH</button>
-          <button class="menu-button" type="button" data-target="central-users">Usuários da central</button>
-          <button class="menu-button" type="button" data-target="branding">Identidade do provedor</button>
-          <button class="menu-button" type="button" data-target="subscription">Plano e assinatura</button>
+          <button class="menu-button" type="button" data-target="mkauth"><i data-lucide="database" class="w-4 h-4"></i> Integração MK-AUTH</button>
+          <button class="menu-button" type="button" data-target="mikrotik"><i data-lucide="server" class="w-4 h-4"></i> Integração MikroTik</button>
+          <button class="menu-button" type="button" data-target="ftth"><i data-lucide="git-branch" class="w-4 h-4"></i> Mapa e viabilidade FTTH</button>
+          <button class="menu-button" type="button" data-target="central-users"><i data-lucide="shield" class="w-4 h-4"></i> Usuários da central</button>
+          <button class="menu-button" type="button" data-target="branding"><i data-lucide="palette" class="w-4 h-4"></i> Identidade do provedor</button>
+          <button class="menu-button" type="button" data-target="subscription"><i data-lucide="credit-card" class="w-4 h-4"></i> Plano e assinatura</button>
         </div></details>
         {audit_menu}
       </nav>
