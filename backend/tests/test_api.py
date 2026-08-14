@@ -273,9 +273,9 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "Assistente IA de atendimento" in response.text
     assert "MODO ASSISTIDO" in response.text
     assert "central-users" in response.text
-    assert "CRIAR ACESSO E ENVIAR CONVITE" in response.text
-    assert "REENVIAR CONVITE DO PORTAL" in response.text
-    assert "ACESSO AO PORTAL DESATIVADO" in response.text
+    assert "Criar acesso" in response.text
+    assert "Reenviar convite" in response.text
+    assert "Portal desativado" in response.text
     assert "Contas que já possuem acesso ao portal" in response.text
     assert "central-active-module" in response.text
     assert "/api/v1/integrations/mkauth/plans" in response.text
@@ -284,12 +284,12 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "mkauth-clients-body" in response.text
     assert "/api/v1/integrations/mkauth/client-details" in response.text
     assert "mkauth-client-details" in response.text
-    assert "VER DETALHES" in response.text
+    assert '<i data-lucide="eye" class="w-3.5 h-3.5"></i>' in response.text
     assert "Clientes desativados" in response.text
     assert "mkauth-inactive-clients-body" in response.text
     assert "Diagnóstico PPPoE/RADIUS" in response.text
     assert "/api/v1/integrations/routeros/diagnostic" in response.text
-    assert "VER PPPoE" in response.text
+    assert '<i data-lucide="wifi" class="w-3.5 h-3.5"></i> PPPoE' in response.text
     assert "routeros-username-filter" in response.text
     assert "Verificações automáticas" in response.text
     assert "routeros-checks-body" in response.text
@@ -297,7 +297,7 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "/api/v1/integrations/mkauth/additional-clients" in response.text
     assert "Títulos MK-AUTH" in response.text
     assert "/api/v1/integrations/mkauth/titles" in response.text
-    assert "VER FINANCEIRO" in response.text
+    assert '<i data-lucide="banknote" class="w-3.5 h-3.5"></i>' in response.text
     assert "mkauth-titles-login-filter" in response.text
     assert "LIBERAR POR 48 HORAS" in response.text
     assert "/api/v1/integrations/mkauth/trust-unlock" in response.text
@@ -327,7 +327,8 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert 'http-equiv="refresh"' not in response.text
     assert "Atualização automática desativada" in response.text
     assert "mkauth-clients-filter" in response.text
-    assert ".client-state.blocked" in response.text
+    assert "<th>Cliente</th><th>Login PPPoE</th><th>Situação</th><th>Tipo</th><th>Cidade/UF</th><th>Coordenadas</th><th>Ação</th>" in response.text
+    assert "fin-status-${client.blocked ? 'red' : 'green'}" in response.text
     assert "título(s) pendente(s)" in response.text
     assert 'id="mkauth-titles-filter" type="hidden" value=""' in response.text
     assert "<th>Situação</th><th>Vencimento</th><th>Ação</th>" in response.text

@@ -775,9 +775,6 @@ async def central_dashboard(
     section {{ padding:18px; overflow:auto; }} h2 {{ margin-top:0; font-size:19px; }}
     table {{ width:100%; border-collapse:collapse; }} th,td {{ padding:11px 8px; border-bottom:1px solid #eef1f2; text-align:left; }}
     .status {{ background:var(--mint); color:var(--green); padding:4px 8px; border-radius:999px; }}
-    .client-state {{ display:inline-block; padding:4px 9px; border-radius:999px; font-weight:700; }}
-    .client-state.active {{ background:#d8f3dc; color:#176b2c; }}
-    .client-state.blocked {{ background:#ffe0de; color:#a51d16; }}
     tr.client-blocked {{ background:#fff5f4; }}
     tr.client-active {{ background:#f5fff7; }}
     button {{ border:0; border-radius:8px; padding:9px 12px; background:var(--green); color:white; cursor:pointer; font:inherit; }}
@@ -785,6 +782,7 @@ async def central_dashboard(
     .btn-sm {{ padding:6px 10px !important; font-size:11.5px !important; border-radius:7px !important; }}
     .row-actions {{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }}
     .row-actions form {{ margin:0; }}
+    .btn-icon {{ width:30px; height:30px; padding:0 !important; display:inline-flex; align-items:center; justify-content:center; border-radius:7px !important; flex-shrink:0; }}
     .button-link {{ display:inline-block; border-radius:8px; padding:8px 10px; background:var(--green); color:white; text-decoration:none; white-space:nowrap; }}
     .secondary-link {{ background:#6b7280; }}
     .danger-link {{ background:#b42318; }}
@@ -1040,8 +1038,8 @@ async def central_dashboard(
         <label>Buscar cliente <input id="mkauth-clients-filter" type="search" placeholder="Nome, login, cidade ou identificador"></label>
         <p id="mkauth-clients-status">Abra este módulo para consultar os clientes.</p>
         <table>
-          <thead><tr><th>Cliente</th><th>Login PPPoE</th><th>Situação</th><th>Tipo</th><th>Cidade/UF</th><th>Coordenadas</th><th>Identificador</th><th>Ação</th></tr></thead>
-          <tbody id="mkauth-clients-body"><tr><td colspan="8">Consulta ainda não realizada.</td></tr></tbody>
+          <thead><tr><th>Cliente</th><th>Login PPPoE</th><th>Situação</th><th>Tipo</th><th>Cidade/UF</th><th>Coordenadas</th><th>Ação</th></tr></thead>
+          <tbody id="mkauth-clients-body"><tr><td colspan="7">Consulta ainda não realizada.</td></tr></tbody>
         </table>
         <section id="mkauth-client-details" hidden>
           <h3>Detalhes técnicos do cliente</h3>
@@ -1057,8 +1055,8 @@ async def central_dashboard(
         <button type="button" id="load-mkauth-inactive-clients">ATUALIZAR CLIENTES</button>
         <p id="mkauth-inactive-clients-status">Abra este módulo para consultar os clientes desativados.</p>
         <table>
-          <thead><tr><th>Cliente</th><th>Login PPPoE</th><th>Tipo</th><th>Cidade/UF</th><th>Coordenadas</th><th>Identificador</th><th>Ação</th></tr></thead>
-          <tbody id="mkauth-inactive-clients-body"><tr><td colspan="7">Consulta ainda não realizada.</td></tr></tbody>
+          <thead><tr><th>Cliente</th><th>Login PPPoE</th><th>Tipo</th><th>Cidade/UF</th><th>Coordenadas</th><th>Ação</th></tr></thead>
+          <tbody id="mkauth-inactive-clients-body"><tr><td colspan="6">Consulta ainda não realizada.</td></tr></tbody>
         </table>
         <section id="mkauth-inactive-client-details" hidden>
           <h3>Detalhes técnicos do cliente desativado</h3>
@@ -1423,33 +1421,38 @@ async def central_dashboard(
               if (allowPppoeDiagnostic) {{
                 const stateCell = document.createElement('td');
                 const stateBadge = document.createElement('span');
-                stateBadge.className = `client-state ${{client.blocked ? 'blocked' : 'active'}}`;
+                stateBadge.className = `fin-status fin-status-${{client.blocked ? 'red' : 'green'}}`;
                 stateBadge.textContent = client.blocked ? 'Bloqueado' : 'Ativo';
                 stateCell.appendChild(stateBadge);
                 row.appendChild(stateCell);
               }}
-              [client.connection_type, location, client.coordinates, client.uuid || '-'].forEach((value) => {{
+              [client.connection_type, location, client.coordinates].forEach((value) => {{
                 const cell = document.createElement('td');
                 cell.textContent = value;
                 row.appendChild(cell);
               }});
               const actionCell = document.createElement('td');
+              const actionsWrapper = document.createElement('div');
+              actionsWrapper.className = 'row-actions';
               const detailsButton = document.createElement('button');
               detailsButton.type = 'button';
-              detailsButton.textContent = 'VER DETALHES';
+              detailsButton.className = 'btn-icon';
+              detailsButton.title = 'Ver detalhes';
+              detailsButton.innerHTML = '<i data-lucide="eye" class="w-3.5 h-3.5"></i>';
               detailsButton.addEventListener('click', () => loadMkauthClientDetails(client.login, detailsTarget, client.uuid));
-              actionCell.appendChild(detailsButton);
+              actionsWrapper.appendChild(detailsButton);
               if (allowPppoeDiagnostic) {{
                 const portalButton = document.createElement('button');
                 portalButton.type = 'button';
-                portalButton.className = 'portal-manage-button';
+                portalButton.className = 'btn-icon secondary portal-manage-button';
                 const portalAccess = portalAccesses.find((access) =>
                   (client.uuid && access.external_customer_id === client.uuid) ||
                   (access.external_login || '').toLocaleLowerCase('pt-BR') ===
                     (client.login || '').toLocaleLowerCase('pt-BR'));
-                portalButton.textContent = portalAccess
-                  ? (portalAccess.active ? 'REENVIAR CONVITE DO PORTAL' : 'ACESSO AO PORTAL DESATIVADO')
-                  : 'CRIAR ACESSO E ENVIAR CONVITE';
+                portalButton.title = portalAccess
+                  ? (portalAccess.active ? 'Reenviar convite' : 'Portal desativado')
+                  : 'Criar acesso';
+                portalButton.innerHTML = '<i data-lucide="send" class="w-3.5 h-3.5"></i>';
                 portalButton.disabled = Boolean(portalAccess && !portalAccess.active);
                 portalButton.addEventListener('click', () => {{
                   if (!client.uuid) {{
@@ -1479,37 +1482,43 @@ async def central_dashboard(
                   document.body.appendChild(form);
                   form.submit();
                 }});
-                actionCell.appendChild(portalButton);
+                actionsWrapper.appendChild(portalButton);
                 const diagnosticButton = document.createElement('button');
                 diagnosticButton.type = 'button';
-                diagnosticButton.textContent = 'VER PPPoE';
+                diagnosticButton.className = 'btn-icon secondary';
+                diagnosticButton.title = 'Ver PPPoE';
+                diagnosticButton.innerHTML = '<i data-lucide="wifi" class="w-3.5 h-3.5"></i>';
                 diagnosticButton.addEventListener('click', () => {{
                   document.getElementById('routeros-username-filter').value = client.login;
                   activateModule('routeros-diagnostic');
                   loadRouterosDiagnostic(true, client.login);
                 }});
-                actionCell.appendChild(diagnosticButton);
+                actionsWrapper.appendChild(diagnosticButton);
                 const financialButton = document.createElement('button');
                 financialButton.type = 'button';
-                financialButton.textContent = 'VER FINANCEIRO';
+                financialButton.className = 'btn-icon secondary';
+                financialButton.title = 'Ver financeiro';
+                financialButton.innerHTML = '<i data-lucide="banknote" class="w-3.5 h-3.5"></i>';
                 financialButton.addEventListener('click', () => {{
                   document.getElementById('mkauth-titles-login-filter').value = client.login;
                   activateModule('mkauth-titles');
                   loadMkauthTitles(true, client.login);
                 }});
-                actionCell.appendChild(financialButton);
+                actionsWrapper.appendChild(financialButton);
               }}
+              actionCell.appendChild(actionsWrapper);
               row.appendChild(actionCell);
               body.appendChild(row);
             }});
             if (!items.length) {{
               const row = document.createElement('tr');
               const cell = document.createElement('td');
-              cell.colSpan = allowPppoeDiagnostic ? 8 : 7;
+              cell.colSpan = allowPppoeDiagnostic ? 7 : 6;
               cell.textContent = emptyMessage;
               row.appendChild(cell);
               body.appendChild(row);
             }}
+            lucide.createIcons();
           }};
           renderActiveMkauthClients = () => {{
             const query = document.getElementById('mkauth-clients-filter').value.trim().toLocaleLowerCase('pt-BR');
@@ -1561,7 +1570,8 @@ async def central_dashboard(
             const actionCell = document.createElement('td');
             const pppoeButton = document.createElement('button');
             pppoeButton.type = 'button';
-            pppoeButton.textContent = 'VER PPPoE';
+            pppoeButton.className = 'btn-sm secondary';
+            pppoeButton.innerHTML = '<i data-lucide="wifi" class="w-3.5 h-3.5"></i> PPPoE';
             pppoeButton.addEventListener('click', () => {{
               document.getElementById('routeros-username-filter').value = client.login;
               activateModule('routeros-diagnostic');
@@ -1571,6 +1581,7 @@ async def central_dashboard(
             row.appendChild(actionCell);
             additionalBody.appendChild(row);
           }});
+          lucide.createIcons();
           if (!data.additional_clients.length) {{
             const row = document.createElement('tr');
             const cell = document.createElement('td');
