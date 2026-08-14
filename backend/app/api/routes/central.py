@@ -19,6 +19,7 @@ from app.api.routes.support import list_support_requests, mark_answered, mark_fo
 from app.api.routes.network import list_active_alerts
 from app.core.network_metrics_store import network_metrics_store
 from app.core.cto_store import cto_store
+from app.core.network_segment_store import network_segment_store, CABLE_TYPES
 from app.core.geo import GeocodingError, geocode_address, haversine_meters
 from app.api.routes.central_auth import (
     require_central_access,
@@ -101,6 +102,32 @@ async def central_dashboard(
     ai_usage = ai_usage_store.get_usage(organization_id)
     network_alerts = list_active_alerts(organization_id)
     ctos = cto_store.list_active(organization_id)
+    network_segments = network_segment_store.list_active(organization_id)
+    ftth_map_data = json.dumps(
+        {
+            "ctos": [
+                {
+                    "id": cto["id"], "code": cto["code"],
+                    "latitude": cto["latitude"], "longitude": cto["longitude"],
+                    "occupied_ports": cto["occupied_ports"],
+                    "total_ports": cto["total_ports"],
+                }
+                for cto in ctos
+            ],
+            "segments": [
+                {
+                    "id": segment["id"],
+                    "from": [segment["from_latitude"], segment["from_longitude"]],
+                    "from_label": segment["from_label"] or segment["from_cto_id"] or "",
+                    "to": [segment["to_latitude"], segment["to_longitude"]],
+                    "to_label": segment["to_label"] or segment["to_cto_id"] or "",
+                    "cable_type": segment["cable_type"],
+                    "fiber_count": segment["fiber_count"],
+                }
+                for segment in network_segments
+            ],
+        }
+    )
     pending_viability = _last_viability_result.pop(organization_id, None)
     if pending_viability is None:
         viability_result_html = ""
@@ -542,32 +569,60 @@ async def central_dashboard(
             return f"{'★' * item['quality_rating']}{'☆' * (5 - item['quality_rating'])}"
         return (
             "<form method='post' action=\"/central/ai/drafts/"
-            f"{item['id']}/avaliar\" class='ai-review-form'>"
+            f"{item['id']}/avaliar\" class='wo-inline-form'>"
             "<select name='quality_rating' required>"
             "<option value=''>Avaliar…</option>"
             "<option value='5'>5 — Excelente</option><option value='4'>4 — Boa</option>"
             "<option value='3'>3 — Regular</option><option value='2'>2 — Fraca</option>"
             "<option value='1'>1 — Ruim</option></select>"
-            "<button type='submit' class='secondary'>OK</button></form>"
+            "<button type='submit' class='btn-sm secondary'>OK</button></form>"
         )
 
+    _confidence_color = {"low": "red", "medium": "amber", "high": "green"}
     ai_draft_rows = "".join(
         f"<tr><td>{escape(item['question'])}</td><td>{escape(item['answer'])}</td>"
         f"<td>{draft_origin(item)}</td>"
-        f"<td>{escape(confidence_labels.get(item['confidence'], item['confidence']))}</td>"
+        f"<td><span class='fin-status fin-status-{_confidence_color.get(item['confidence'], 'gray')}'>"
+        f"{escape(confidence_labels.get(item['confidence'], item['confidence']))}</span></td>"
         f"<td>{draft_rating_control(item)}</td></tr>"
         for item in ai_drafts
     ) or "<tr><td colspan='5'>Nenhum rascunho preparado.</td></tr>"
+    def _cto_occupancy_bar(cto: dict) -> str:
+        total = cto["total_ports"] or 1
+        pct = min(100, round(cto["occupied_ports"] / total * 100))
+        bar_class = "mini-bar-full" if pct >= 90 else "mini-bar-warn" if pct >= 70 else ""
+        return (
+            f"<span class='mini-bar-track'><span class='mini-bar-fill {bar_class}' style='width:{pct}%'></span></span>"
+            f"{cto['occupied_ports']}/{cto['total_ports']} ({cto['available_ports']} livres)"
+        )
+
     cto_rows = "".join(
-        f"<tr><td>{escape(cto['code'])}</td>"
+        f"<tr><td><b>{escape(cto['code'])}</b></td>"
         f"<td>{cto['latitude']:.6f}, {cto['longitude']:.6f}</td>"
-        f"<td>{cto['occupied_ports']}/{cto['total_ports']} ocupadas ({cto['available_ports']} livres)</td>"
+        f"<td>{_cto_occupancy_bar(cto)}</td>"
         f"<td>{escape(cto['splitter_ratio'])}</td>"
         f"<td>{escape(cto['pop_reference'] or '-')}</td>"
         f"<td><form method='post' action='/central/ftth/ctos/{escape(cto['id'])}/desativar'>"
-        "<button class='secondary' type='submit'>DESATIVAR</button></form></td></tr>"
+        "<button class='btn-sm secondary' type='submit'>DESATIVAR</button></form></td></tr>"
         for cto in ctos
     ) or "<tr><td colspan='6'>Nenhuma CTO cadastrada ainda.</td></tr>"
+    cto_select_options = "".join(
+        f"<option value='{escape(cto['id'])}'>{escape(cto['code'])}</option>"
+        for cto in ctos
+    )
+    _cable_type_labels = {
+        "backbone": "Backbone", "distribuicao": "Distribuição", "drop": "Drop",
+    }
+    segment_rows = "".join(
+        f"<tr><td>{escape(segment['from_label'] or segment['from_cto_id'] or '-')}</td>"
+        f"<td>{escape(segment['to_label'] or segment['to_cto_id'] or '-')}</td>"
+        f"<td>{escape(_cable_type_labels.get(segment['cable_type'], segment['cable_type']))}</td>"
+        f"<td>{segment['fiber_count'] if segment['fiber_count'] is not None else '-'}</td>"
+        f"<td><form method='post' action='/central/ftth/segmentos/{escape(segment['id'])}/desativar'>"
+        "<button class='btn-icon secondary' type='submit' title='Remover rota'>"
+        '<i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></form></td></tr>'
+        for segment in network_segments
+    ) or "<tr><td colspan='5'>Nenhuma rota de cabo cadastrada ainda.</td></tr>"
     network_rows = "".join(
         f"<tr><td><b>{escape(alert.title)}</b></td><td>{escape(alert.area)}</td>"
         f"<td><span class='net-severity net-severity-{escape(alert.severity)}'>{escape(alert.severity)}</span></td>"
@@ -799,6 +854,8 @@ async def central_dashboard(
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     :root {{ color-scheme: light; --green:#0e4d44; --green-dark:#0a2e2a; --mint:#e6f3f1; --ink:#1f2937; --muted:#6b7280; --border:#e8ebec; }}
     * {{ box-sizing:border-box; }}
@@ -910,6 +967,10 @@ async def central_dashboard(
     .net-bool-yes .net-bool-dot {{ background:#22c55e; }} .net-bool-yes {{ color:#176b2c; }}
     .net-bool-no .net-bool-dot {{ background:#ef4444; }} .net-bool-no {{ color:#b91c1c; }}
     .net-bool-unknown .net-bool-dot {{ background:#9ca3af; }} .net-bool-unknown {{ color:var(--muted); }}
+    .mini-bar-track {{ width:80px; height:6px; border-radius:999px; background:#e8ebec; overflow:hidden; display:inline-block; vertical-align:middle; margin-right:8px; }}
+    .mini-bar-fill {{ height:100%; border-radius:999px; background:var(--green); }}
+    .mini-bar-fill.mini-bar-warn {{ background:#f59e0b; }}
+    .mini-bar-fill.mini-bar-full {{ background:#ef4444; }}
     .fin-status {{ font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px; display:inline-block; white-space:nowrap; }}
     .fin-status-green {{ background:#d8f3dc; color:#176b2c; }}
     .fin-status-amber {{ background:#fef3c7; color:#b45309; }}
@@ -1078,8 +1139,43 @@ async def central_dashboard(
       <section class="module-panel" data-module="ftth">
         <h2>Mapa e viabilidade FTTH</h2>
         <p><small>Cadastro real de CTOs — coordenadas, capacidade de portas e ocupação. A checagem de viabilidade usada pelo técnico em campo consulta estes dados.</small></p>
+        <h3>Mapa da rede</h3>
+        <div id="ftth-map" style="height:420px;border-radius:12px;overflow:hidden;margin:12px 0;border:1px solid var(--border)"></div>
+        <p class="row-actions" style="font-size:12px;color:var(--muted)">
+          <span><span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:#3b82f6;margin-right:4px;vertical-align:middle"></span>Backbone</span>
+          <span><span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:#22c55e;margin-right:4px;vertical-align:middle"></span>Distribuição</span>
+          <span><span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:#f59e0b;margin-right:4px;vertical-align:middle"></span>Drop</span>
+        </p>
+        <h3>Adicionar rota de cabo</h3>
+        <form class="create-order wo-form" method="post" action="/central/ftth/segmentos">
+          <label>Ponto de origem<select name="from_cto_id" class="segment-endpoint-select" data-prefix="from">
+            <option value="">Novo ponto (ex.: POP)…</option>{cto_select_options}
+          </select></label>
+          <span class="segment-custom-point" data-prefix="from">
+            <label>Nome do ponto de origem<input name="from_label" maxlength="100" placeholder="Ex.: POP Centro"></label>
+            <label>Latitude de origem<input type="number" step="0.000001" name="from_latitude" min="-90" max="90" placeholder="-12.266"></label>
+            <label>Longitude de origem<input type="number" step="0.000001" name="from_longitude" min="-180" max="180" placeholder="-38.966"></label>
+          </span>
+          <label>Ponto de destino<select name="to_cto_id" class="segment-endpoint-select" data-prefix="to">
+            <option value="">Novo ponto (ex.: POP)…</option>{cto_select_options}
+          </select></label>
+          <span class="segment-custom-point" data-prefix="to">
+            <label>Nome do ponto de destino<input name="to_label" maxlength="100" placeholder="Ex.: POP Centro"></label>
+            <label>Latitude de destino<input type="number" step="0.000001" name="to_latitude" min="-90" max="90" placeholder="-12.266"></label>
+            <label>Longitude de destino<input type="number" step="0.000001" name="to_longitude" min="-180" max="180" placeholder="-38.966"></label>
+          </span>
+          <label>Tipo de cabo<select name="cable_type">
+            <option value="backbone">Backbone</option>
+            <option value="distribuicao" selected>Distribuição</option>
+            <option value="drop">Drop</option>
+          </select></label>
+          <label>Quantidade de fibras<input type="number" name="fiber_count" min="1" max="288" placeholder="Opcional"></label>
+          <label>Observações<input name="notes" maxlength="300" placeholder="Opcional"></label>
+          <button type="submit">ADICIONAR ROTA</button>
+        </form>
+        <table><thead><tr><th>Origem</th><th>Destino</th><th>Tipo</th><th>Fibras</th><th>Ação</th></tr></thead><tbody>{segment_rows}</tbody></table>
         <h3>Cadastrar CTO</h3>
-        <form class="create-order" method="post" action="/central/ftth/ctos">
+        <form class="create-order wo-form" method="post" action="/central/ftth/ctos">
           <label>Código<input name="code" minlength="1" maxlength="50" required placeholder="Ex.: CTO-CENTRO-01"></label>
           <label>Latitude<input type="number" step="0.000001" name="latitude" min="-90" max="90" required placeholder="-12.266"></label>
           <label>Longitude<input type="number" step="0.000001" name="longitude" min="-180" max="180" required placeholder="-38.966"></label>
@@ -1094,13 +1190,14 @@ async def central_dashboard(
         <h3>CTOs cadastradas</h3>
         <table><thead><tr><th>Código</th><th>Coordenadas</th><th>Portas</th><th>Splitter</th><th>POP</th><th>Ação</th></tr></thead><tbody>{cto_rows}</tbody></table>
         <h3>Verificar viabilidade</h3>
-        <form class="create-order" method="post" action="/central/ftth/viabilidade">
+        <form class="create-order wo-form" method="post" action="/central/ftth/viabilidade">
           <label>Endereço<input name="address" maxlength="200" placeholder="Rua, número, bairro, cidade"></label>
           <label>Ou latitude<input type="number" step="0.000001" name="latitude" min="-90" max="90" placeholder="Opcional se preencher o endereço"></label>
           <label>Ou longitude<input type="number" step="0.000001" name="longitude" min="-180" max="180" placeholder="Opcional se preencher o endereço"></label>
           <button type="submit">VERIFICAR</button>
         </form>
         {viability_result_html}
+        <script id="ftth-map-data" type="application/json">{ftth_map_data}</script>
       </section>
       <section class="module-panel" data-module="mkauth-clients">
         <h2>Clientes MK-AUTH</h2>
@@ -1266,7 +1363,7 @@ async def central_dashboard(
         <h3>IA real deste provedor</h3>
         <p>{ai_config_status}</p>
         <p>Uso este mês: <b>{ai_usage['requests_used']}</b> de <b>{ai_config.monthly_request_limit}</b> chamados ({ai_usage['input_tokens']} tokens de entrada, {ai_usage['output_tokens']} de saída).</p>
-        <form class="create-order" method="post" action="/central/ai/config">
+        <form class="create-order wo-form" method="post" action="/central/ai/config">
           <label><input type="checkbox" name="enabled" value="1" {'checked' if ai_config.enabled else ''}> Ativar IA real para este provedor</label>
           <label>Modelo<select name="model">{ai_model_options}</select></label>
           <label>Chave de API (Anthropic)<input type="password" name="api_key" placeholder="{'Deixe em branco para manter a chave atual' if ai_config.api_key else 'sk-ant-...'}"></label>
@@ -1275,7 +1372,7 @@ async def central_dashboard(
           <button type="submit">SALVAR CONFIGURAÇÃO DE IA</button>
         </form>
         <h3>Base de conhecimento (usada como reforço e como reserva)</h3>
-        <form class="create-order" method="post" action="/central/ai/knowledge">
+        <form class="create-order wo-form" method="post" action="/central/ai/knowledge">
           <label>Título<input name="title" minlength="3" maxlength="100" required placeholder="Ex.: Reiniciar roteador"></label>
           <label>Orientação<input name="content" minlength="10" maxlength="1000" required placeholder="Resposta aprovada pela equipe"></label>
           <label>Categoria<select name="category">{ai_category_options}</select></label>
@@ -1283,7 +1380,7 @@ async def central_dashboard(
         </form>
         <table><thead><tr><th>Título</th><th>Orientação aprovada</th><th>Categoria</th><th>Cadastro UTC</th></tr></thead><tbody>{ai_knowledge_rows}</tbody></table>
         <h3>Testar uma pergunta</h3>
-        <form class="create-order" method="post" action="/central/ai/drafts">
+        <form class="create-order wo-form" method="post" action="/central/ai/drafts">
           <label>Pergunta do cliente<input name="question" minlength="3" maxlength="500" required placeholder="Ex.: Minha internet está sem conexão"></label>
           <button type="submit">PREPARAR RASCUNHO</button>
         </form>
@@ -2003,6 +2100,57 @@ async def central_dashboard(
         document.getElementById('order-longitude').value = coordinates[1] || '';
         markDirty();
       }});
+      let ftthMapInitialized = false;
+      const initFtthMap = () => {{
+        if (ftthMapInitialized) return;
+        ftthMapInitialized = true;
+        const dataElement = document.getElementById('ftth-map-data');
+        const mapData = dataElement ? JSON.parse(dataElement.textContent) : {{ ctos: [], segments: [] }};
+        const mapContainer = document.getElementById('ftth-map');
+        if (!mapContainer) return;
+        const cableColors = {{ backbone: '#3b82f6', distribuicao: '#22c55e', drop: '#f59e0b' }};
+        const defaultCenter = mapData.ctos.length
+          ? [mapData.ctos[0].latitude, mapData.ctos[0].longitude]
+          : [-12.2664, -38.9663];
+        const map = L.map('ftth-map').setView(defaultCenter, mapData.ctos.length ? 14 : 12);
+        L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+          attribution: '© OpenStreetMap',
+          maxZoom: 19,
+        }}).addTo(map);
+        const bounds = [];
+        mapData.ctos.forEach((cto) => {{
+          const pct = cto.total_ports ? Math.round((cto.occupied_ports / cto.total_ports) * 100) : 0;
+          const color = pct >= 90 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#22c55e';
+          const marker = L.circleMarker([cto.latitude, cto.longitude], {{
+            radius: 8, color, fillColor: color, fillOpacity: 0.85, weight: 2,
+          }}).addTo(map);
+          marker.bindPopup(`<b>${{cto.code}}</b><br>${{cto.occupied_ports}}/${{cto.total_ports}} portas ocupadas (${{pct}}%)`);
+          bounds.push([cto.latitude, cto.longitude]);
+        }});
+        mapData.segments.forEach((segment) => {{
+          const color = cableColors[segment.cable_type] || '#6b7280';
+          const line = L.polyline([segment.from, segment.to], {{ color, weight: 3, opacity: 0.85 }}).addTo(map);
+          const fiberInfo = segment.fiber_count ? `${{segment.fiber_count}} fibras` : 'quantidade de fibras não informada';
+          line.bindPopup(`${{segment.from_label}} → ${{segment.to_label}}<br>${{fiberInfo}}`);
+          bounds.push(segment.from, segment.to);
+        }});
+        if (bounds.length > 1) map.fitBounds(bounds, {{ padding: [30, 30] }});
+        setTimeout(() => map.invalidateSize(), 150);
+      }};
+
+      document.querySelectorAll('.segment-endpoint-select').forEach((select) => {{
+        const toggleCustomFields = () => {{
+          const prefix = select.dataset.prefix;
+          const customFields = document.querySelector(`.segment-custom-point[data-prefix="${{prefix}}"]`);
+          if (!customFields) return;
+          const usingCustomPoint = select.value === '';
+          customFields.style.display = usingCustomPoint ? 'contents' : 'none';
+          customFields.querySelectorAll('input').forEach((input) => {{ input.required = usingCustomPoint; }});
+        }};
+        select.addEventListener('change', toggleCustomFields);
+        toggleCustomFields();
+      }});
+
       const loadMkauthTickets = async (force = false) => {{
         if (mkauthTicketsLoaded && !force) return;
         const ticketsStatus = document.getElementById('mkauth-tickets-status');
@@ -2096,6 +2244,7 @@ async def central_dashboard(
         if (selected === 'financial') {{ loadTrustUnlocks(); loadPixSimulations(); }}
         if (selected === 'mkauth-tickets') loadMkauthTickets();
         if (selected === 'work-orders') loadMkauthClients();
+        if (selected === 'ftth') initFtthMap();
       }};
       menuButtons.forEach((button) => {{
         button.addEventListener('click', () => activateModule(button.dataset.target));
@@ -2544,6 +2693,70 @@ async def central_deactivate_cto(
     except KeyError as error:
         raise HTTPException(404, "cto_not_found") from error
     audit_store.record(organization_id, session["user"], "cto_deactivated", cto_id, {})
+    return RedirectResponse("/central#ftth", status_code=303)
+
+
+@router.post("/central/ftth/segmentos", include_in_schema=False)
+async def central_create_network_segment(
+    request: Request,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    fields = parse_qs((await request.body()).decode("utf-8"))
+
+    def _resolve_point(prefix: str) -> dict:
+        cto_id = fields.get(f"{prefix}_cto_id", [""])[0].strip()
+        if cto_id:
+            cto = cto_store.get(organization_id, cto_id)
+            return {
+                "cto_id": cto_id,
+                "latitude": cto["latitude"],
+                "longitude": cto["longitude"],
+            }
+        label = fields.get(f"{prefix}_label", [""])[0].strip()
+        try:
+            latitude = float(fields.get(f"{prefix}_latitude", [""])[0])
+            longitude = float(fields.get(f"{prefix}_longitude", [""])[0])
+        except ValueError as error:
+            raise HTTPException(422, "invalid_point_coordinates") from error
+        return {"label": label or None, "latitude": latitude, "longitude": longitude}
+
+    try:
+        from_point = _resolve_point("from")
+        to_point = _resolve_point("to")
+    except KeyError as error:
+        raise HTTPException(404, "cto_not_found") from error
+
+    cable_type = fields.get("cable_type", ["distribuicao"])[0]
+    fiber_count_raw = fields.get("fiber_count", [""])[0].strip()
+    fiber_count = int(fiber_count_raw) if fiber_count_raw else None
+    notes = fields.get("notes", [""])[0].strip() or None
+
+    try:
+        segment = network_segment_store.create(
+            organization_id, from_point, to_point, cable_type, fiber_count, notes
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    audit_store.record(
+        organization_id, session["user"], "network_segment_created", segment["id"], {}
+    )
+    return RedirectResponse("/central#ftth", status_code=303)
+
+
+@router.post("/central/ftth/segmentos/{segment_id}/desativar", include_in_schema=False)
+async def central_deactivate_network_segment(
+    segment_id: str,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    try:
+        network_segment_store.deactivate(organization_id, segment_id)
+    except KeyError as error:
+        raise HTTPException(404, "network_segment_not_found") from error
+    audit_store.record(
+        organization_id, session["user"], "network_segment_deactivated", segment_id, {}
+    )
     return RedirectResponse("/central#ftth", status_code=303)
 
 
