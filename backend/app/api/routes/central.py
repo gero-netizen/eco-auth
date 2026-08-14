@@ -692,88 +692,104 @@ async def central_dashboard(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Painel da Central</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
   <style>
-    :root {{ color-scheme: light; --green:#075e54; --mint:#d8f3ee; --ink:#17332f; }}
+    :root {{ color-scheme: light; --green:#0e4d44; --green-dark:#0a2e2a; --mint:#e6f3f1; --ink:#1f2937; --muted:#6b7280; --border:#e8ebec; }}
     * {{ box-sizing:border-box; }}
-    body {{ margin:0; background:#f3f8f7; color:var(--ink); font:16px system-ui,sans-serif; }}
-    header {{ background:var(--green); color:white; padding:22px 5vw; }}
-    header h1 {{ margin:0 0 4px; }}
+    body {{ margin:0; background:#f4f6f7; color:var(--ink); font:15px/1.5 Inter,system-ui,sans-serif; }}
+    header {{ background:white; color:var(--ink); padding:14px 5vw; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; flex-wrap:wrap; }}
+    header h1 {{ margin:0; font-size:16px; }}
+    header > div {{ font-size:12px; color:var(--muted); }}
+    header .logout-form {{ margin-left:auto; }}
     main {{ width:min(1420px,94vw); margin:24px auto 48px; }}
-    .simulation {{ background:#fff0c2; border-left:5px solid #e59b00; padding:14px; border-radius:8px; }}
+    .simulation {{ background:var(--mint); border-left:5px solid var(--green); padding:14px; border-radius:10px; font-size:13.5px; }}
     .cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin:20px 0; }}
-    .card, section {{ background:white; border-radius:14px; box-shadow:0 2px 10px #17332f18; }}
-    .card {{ padding:18px; }} .card strong {{ display:block; font-size:30px; color:var(--green); }}
+    .card, section {{ background:white; border-radius:14px; box-shadow:0 1px 2px rgba(0,0,0,.03),0 8px 20px -14px rgba(0,0,0,.12); border:1px solid var(--border); }}
+    .card {{ padding:18px; }} .card strong {{ display:block; font-size:28px; color:var(--green); }}
+    .card.card-unavailable {{ opacity:.6; }} .card.card-unavailable strong {{ color:var(--muted); font-size:15px; }}
     .dashboard-layout {{ display:grid; grid-template-columns:270px minmax(0,1fr); gap:18px; align-items:start; }}
-    .sidebar {{ position:sticky; top:18px; background:white; border-radius:14px; box-shadow:0 2px 10px #17332f18; padding:12px; }}
-    .sidebar-title {{ margin:4px 8px 10px; color:#627773; font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }}
-    .menu-category {{ border-bottom:1px solid #e3ecea; padding:3px 0; }}
+    .sidebar {{ position:sticky; top:18px; background:var(--green-dark); border-radius:14px; padding:12px; }}
+    .sidebar-title {{ margin:4px 8px 10px; color:#7fa39c; font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }}
+    .menu-category {{ border-bottom:1px solid rgba(255,255,255,.08); padding:3px 0; }}
     .menu-category:last-child {{ border-bottom:0; }}
-    .menu-category summary {{ list-style:none; cursor:pointer; padding:10px 9px; border-radius:9px; color:#456b65; font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }}
+    .menu-category summary {{ list-style:none; cursor:pointer; padding:10px 9px; border-radius:9px; color:#9fc4bd; font-size:12.5px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }}
     .menu-category summary::-webkit-details-marker {{ display:none; }}
     .menu-category summary::after {{ content:'▸'; float:right; transition:transform .15s ease; }}
     .menu-category[open] summary::after {{ transform:rotate(90deg); }}
-    .menu-category summary:hover {{ background:#f2f8f6; }}
+    .menu-category summary:hover {{ background:rgba(255,255,255,.06); }}
     .menu-items {{ padding:0 3px 5px; }}
-    .menu-button {{ display:block; width:100%; padding:11px 12px; margin:2px 0; border-radius:9px; background:transparent; color:var(--ink); text-align:left; font-weight:600; }}
-    .menu-button:hover {{ background:#edf7f5; }}
+    .menu-button {{ display:block; width:100%; padding:11px 12px; margin:2px 0; border-radius:9px; background:transparent; color:#d7e6e3; text-align:left; font-weight:600; font-size:13.5px; }}
+    .menu-button:hover {{ background:rgba(255,255,255,.08); color:white; }}
     .menu-button.active {{ background:var(--green); color:white; }}
     .module-area {{ min-width:0; }}
     .module-panel {{ display:none; }}
     .module-panel.active {{ display:block; }}
-    section {{ padding:18px; overflow:auto; }} h2 {{ margin-top:0; font-size:20px; }}
-    table {{ width:100%; border-collapse:collapse; }} th,td {{ padding:11px 8px; border-bottom:1px solid #dce8e5; text-align:left; }}
+    section {{ padding:18px; overflow:auto; }} h2 {{ margin-top:0; font-size:19px; }}
+    table {{ width:100%; border-collapse:collapse; }} th,td {{ padding:11px 8px; border-bottom:1px solid #eef1f2; text-align:left; }}
     .status {{ background:var(--mint); color:var(--green); padding:4px 8px; border-radius:999px; }}
     .client-state {{ display:inline-block; padding:4px 9px; border-radius:999px; font-weight:700; }}
     .client-state.active {{ background:#d8f3dc; color:#176b2c; }}
     .client-state.blocked {{ background:#ffe0de; color:#a51d16; }}
     tr.client-blocked {{ background:#fff5f4; }}
     tr.client-active {{ background:#f5fff7; }}
-    button {{ border:0; border-radius:8px; padding:9px 12px; background:var(--green); color:white; cursor:pointer; }}
+    button {{ border:0; border-radius:8px; padding:9px 12px; background:var(--green); color:white; cursor:pointer; font:inherit; }}
+    button:hover {{ background:var(--green-dark); }}
     .button-link {{ display:inline-block; border-radius:8px; padding:8px 10px; background:var(--green); color:white; text-decoration:none; white-space:nowrap; }}
-    .secondary-link {{ background:#456b65; }}
+    .secondary-link {{ background:#6b7280; }}
     .danger-link {{ background:#b42318; }}
     tr.ai-panel-row td {{ padding:0; border-bottom:1px solid #dce8e5; }}
     .ai-panel {{ background:#f5fbfa; border-left:4px solid var(--green); padding:14px 16px; margin:6px 0; border-radius:0 8px 8px 0; }}
-    .ai-panel.ai-panel-done {{ border-left-color:#456b65; background:#f3f8f7; }}
+    .ai-panel.ai-panel-done {{ border-left-color:#6b7280; background:#f3f8f7; }}
     .ai-panel p {{ margin:6px 0; }}
     .ai-review-form {{ display:inline-flex; gap:8px; align-items:flex-start; margin:6px 8px 0 0; vertical-align:top; }}
     .ai-panel textarea {{ width:320px; min-height:70px; padding:8px; border:1px solid #aac0bb; border-radius:8px; font:inherit; }}
     .ai-panel select {{ padding:9px; border:1px solid #aac0bb; border-radius:8px; font:inherit; }}
-    .ai-panel button.secondary {{ background:#456b65; }}
+    .ai-panel button.secondary {{ background:#6b7280; }}
     .ai-panel .alert {{ color:#a51d16; font-weight:600; }}
-    button.secondary {{ background:#e59b00; }} form {{ display:inline-block; margin:2px; }}
+    button.secondary {{ background:#d78200; }} form {{ display:inline-block; margin:2px; }}
     .create-order {{ display:grid; grid-template-columns:1.2fr 1.4fr .7fr .7fr auto; gap:10px; align-items:end; margin-bottom:18px; }}
     .create-order label {{ display:grid; gap:5px; }}
-    input,select {{ border:1px solid #aac0bb; border-radius:8px; padding:10px; font:inherit; min-width:0; background:white; }}
+    input,select {{ border:1px solid #d3dbd9; border-radius:8px; padding:10px; font:inherit; min-width:0; background:white; }}
     input.quantity {{ width:85px; padding:8px; }}
+    .top-badge {{ display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:700; padding:5px 10px; border-radius:999px; background:#d8f3dc; color:#176b2c; }}
+    .top-badge.top-badge-off {{ background:#f1f3f4; color:#6b7280; }}
+    .top-badge .dot {{ width:6px; height:6px; border-radius:999px; background:currentColor; }}
+    .search-input {{ flex:1; max-width:420px; background:#f4f6f7; border:1px solid transparent; border-radius:9px; padding:9px 14px; font-size:13.5px; }}
+    .search-input:focus {{ outline:none; background:white; border-color:var(--green); }}
     @media(max-width:850px) {{
       .dashboard-layout {{ grid-template-columns:1fr; }}
       .sidebar {{ position:static; display:block; padding:10px; }}
       .sidebar-title {{ display:none; }}
       .menu-button {{ width:100%; white-space:normal; }}
+      header .search-input, header .top-badge {{ display:none; }}
     }}
     @media(max-width:700px) {{ .create-order {{ grid-template-columns:1fr; }} }}
-    .alert {{ color:#8a4b00; }} footer {{ margin-top:20px; color:#627773; }}
+    .alert {{ color:#8a4b00; }} footer {{ margin-top:20px; color:var(--muted); }}
     .role-viewer form:not(.logout-form) {{ display:none !important; }}
     .role-viewer .danger-link {{ display:none !important; }}
     .role-viewer .portal-manage-button, .role-attendant .portal-manage-button {{ display:none !important; }}
   </style>
+  <script>document.addEventListener('DOMContentLoaded', () => lucide.createIcons());</script>
 </head>
 <body class="role-{escape(current_user['role'])}">
-  <header><h1>Painel da Central</h1><div>{escape(session['organization']['name'])} • {escape(current_user['name'])} • {escape(role_labels[current_user['role']])}</div><form class="logout-form" method="post" action="/central/logout"><button class="secondary" type="submit">SAIR</button></form></header>
+  <header>
+    <h1>{escape(session['organization']['name'])}</h1>
+    <span class="top-badge"><span class="dot"></span>{escape(role_labels[current_user['role']])}</span>
+    <input class="search-input" type="search" placeholder="Buscar cliente, CPF, login PPPoE, OS..." disabled title="Busca global — em breve">
+    <span class="top-badge {'top-badge-off' if mkauth_settings.mkauth_mode != 'real' else ''}"><span class="dot"></span>MK-AUTH {'real' if mkauth_settings.mkauth_mode == 'real' else 'bancada'}</span>
+    <span class="top-badge {'top-badge-off' if mkauth_settings.routeros_mode != 'real' else ''}"><span class="dot"></span>MikroTik {'real' if mkauth_settings.routeros_mode == 'real' else 'bancada'}</span>
+    <form class="logout-form" method="post" action="/central/logout"><button class="secondary" type="submit">SAIR</button></form>
+  </header>
   <main>
-    <div class="simulation">Confira o status de cada integração (real/bancada) na respectiva tela de configuração antes de agir sobre dados de clientes.</div>
-    <div class="cards">
-      <div class="card"><span>Ordens de serviço</span><strong>{len(orders)}</strong></div>
-      <div class="card"><span>OS pendentes</span><strong>{pending}</strong></div>
-      <div class="card"><span>Itens com estoque baixo</span><strong>{low_stock}</strong></div>
-      <div class="card"><span>Provisionamentos</span><strong>{len(provisioning)}</strong></div>
-    </div>
     <div class="dashboard-layout">
       <nav class="sidebar" aria-label="Módulos da central">
         <div class="sidebar-title">Menu da central</div>
+        <button class="menu-button active" type="button" data-target="dashboard">📊 Dashboard Principal</button>
         <details class="menu-category" open><summary>Operação</summary><div class="menu-items">
-          <button class="menu-button active" type="button" data-target="work-orders">Criar ordem de serviço</button>
+          <button class="menu-button" type="button" data-target="work-orders">Criar ordem de serviço</button>
           <button class="menu-button" type="button" data-target="archived-orders">OS arquivadas</button>
           <button class="menu-button" type="button" data-target="inventory">Estoque do técnico</button>
           <button class="menu-button" type="button" data-target="materials">Histórico de materiais</button>
@@ -811,7 +827,21 @@ async def central_dashboard(
         {audit_menu}
       </nav>
       <div class="module-area">
-      <section class="module-panel active" data-module="work-orders">
+      <section class="module-panel active" data-module="dashboard">
+        <h2>Visão geral da operação</h2>
+        <p class="simulation">Confira o status de cada integração (real/bancada) na respectiva tela de configuração antes de agir sobre dados de clientes.</p>
+        <div class="cards">
+          <div class="card"><span>Ordens de serviço</span><strong>{len(orders)}</strong></div>
+          <div class="card"><span>OS pendentes</span><strong>{pending}</strong></div>
+          <div class="card"><span>Itens com estoque baixo</span><strong>{low_stock}</strong></div>
+          <div class="card"><span>Provisionamentos</span><strong>{len(provisioning)}</strong></div>
+          <div class="card card-unavailable"><span>Clientes ativos</span><strong>Indisponível</strong></div>
+          <div class="card card-unavailable"><span>Faturamento do mês</span><strong>Indisponível</strong></div>
+          <div class="card card-unavailable"><span>Inadimplência</span><strong>Indisponível</strong></div>
+        </div>
+        <p><small>Os cartões marcados como "Indisponível" ainda não têm uma consulta agregada pronta no sistema — dependem de somar dados de todos os clientes no MK-AUTH, o que ainda não construímos. Os demais números acima são reais, lidos direto do banco de dados.</small></p>
+      </section>
+      <section class="module-panel" data-module="work-orders">
         <h2>Criar ordem de serviço</h2>
         <p>A OS será criada somente neste aplicativo e chegará ao celular na próxima sincronização. O cadastro do MK-AUTH não será alterado.</p>
         <form class="create-order" method="post" action="/api/v1/work-orders/from-central">
@@ -1884,7 +1914,7 @@ async def central_dashboard(
         button.addEventListener('click', () => activateModule(button.dataset.target));
       }});
       activateModule(
-        location.hash.slice(1) || localStorage.getItem('central-active-module') || 'work-orders',
+        location.hash.slice(1) || localStorage.getItem('central-active-module') || 'dashboard',
         false,
       );
       const markDirty = () => {{
