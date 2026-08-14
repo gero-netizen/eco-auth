@@ -489,18 +489,26 @@ async def central_dashboard(
         for cto in ctos
     ) or "<tr><td colspan='6'>Nenhuma CTO cadastrada ainda.</td></tr>"
     network_rows = "".join(
-        f"<tr><td>{escape(alert.title)}</td><td>{escape(alert.area)}</td>"
-        f"<td>{escape(alert.severity)}</td>"
+        f"<tr><td><b>{escape(alert.title)}</b></td><td>{escape(alert.area)}</td>"
+        f"<td><span class='net-severity net-severity-{escape(alert.severity)}'>{escape(alert.severity)}</span></td>"
         f"<td>{'Detectado automaticamente' if alert.auto_detected else 'Simulado manualmente'}</td>"
         f"<td>{escape(alert.detected_at.isoformat())}</td></tr>"
         for alert in network_alerts
     ) or "<tr><td colspan='5'>Nenhuma ocorrência ativa.</td></tr>"
+
+    def _net_bool(value):
+        if value is None:
+            return "<span class='net-bool net-bool-unknown'><span class='net-bool-dot'></span>-</span>"
+        css = "net-bool-yes" if value else "net-bool-no"
+        label = "Sim" if value else "Não"
+        return f"<span class='net-bool {css}'><span class='net-bool-dot'></span>{label}</span>"
+
     network_metric_rows = "".join(
         f"<tr><td>{escape(item['recorded_at'])}</td>"
-        f"<td>{'Sim' if item['router_reachable'] else 'Não'}</td>"
+        f"<td>{_net_bool(item['router_reachable'])}</td>"
         f"<td>{item['active_sessions'] if item['active_sessions'] is not None else '-'}</td>"
         f"<td>{item['cpu_load'] if item['cpu_load'] is not None else '-'}</td>"
-        f"<td>{'Sim' if item['radius_ok'] else 'Não' if item['radius_ok'] is not None else '-'}</td></tr>"
+        f"<td>{_net_bool(item['radius_ok'])}</td></tr>"
         for item in network_metrics_store.list_recent(organization_id, limit=30)
     ) or "<tr><td colspan='5'>Nenhuma leitura registrada ainda — a monitoração roda a cada 60s quando o MikroTik está em modo real.</td></tr>"
     current_user = session["user"]
@@ -794,6 +802,14 @@ async def central_dashboard(
     .wo-inline-form {{ display:inline-flex; gap:4px; align-items:center; }}
     .wo-inline-form select, .wo-inline-form input {{ padding:6px 8px; font-size:12px; }}
     .wo-inline-form button {{ padding:6px 10px; font-size:11.5px; }}
+    .net-severity {{ font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px; display:inline-block; }}
+    .net-severity-warning {{ background:#fef3c7; color:#b45309; }}
+    .net-severity-critical {{ background:#fee2e2; color:#b91c1c; }}
+    .net-bool {{ display:inline-flex; align-items:center; gap:5px; font-weight:600; font-size:12.5px; }}
+    .net-bool-dot {{ width:7px; height:7px; border-radius:999px; flex-shrink:0; }}
+    .net-bool-yes .net-bool-dot {{ background:#22c55e; }} .net-bool-yes {{ color:#176b2c; }}
+    .net-bool-no .net-bool-dot {{ background:#ef4444; }} .net-bool-no {{ color:#b91c1c; }}
+    .net-bool-unknown .net-bool-dot {{ background:#9ca3af; }} .net-bool-unknown {{ color:var(--muted); }}
     @media(max-width:850px) {{
       .dashboard-layout {{ grid-template-columns:1fr; }}
       .sidebar {{ position:static; display:block; padding:10px; }}
