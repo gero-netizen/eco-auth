@@ -312,9 +312,10 @@ def test_central_dashboard_is_explicitly_simulated() -> None:
     assert "continuam disponíveis para consulta e restauração" in response.text
     assert "Financeiro e desbloqueio" in response.text
     assert "Simular Pix" in response.text
-    assert "SIMULAR PIX" in response.text
     assert "/api/v1/integrations/mkauth/pix-simulations" in response.text
-    assert "BAIXA REAL PIX" in response.text
+    assert "Baixar Boleto" in response.text
+    assert "SIMULAR PIX" not in response.text
+    assert "BAIXA REAL PIX" not in response.text
     assert "/api/v1/integrations/mkauth/pix-payments" in response.text
     assert "Digite BAIXAR" in response.text
     assert "Resolvido por pagamento" in response.text

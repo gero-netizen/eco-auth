@@ -1081,10 +1081,12 @@ async def central_dashboard(
       <section class="module-panel" data-module="mkauth-titles">
         <h2>Títulos MK-AUTH</h2>
         <p>Consulta financeira real e somente leitura. CPF/CNPJ, linha digitável, QR Code e dados bancários não são enviados para esta tela.</p>
-        <button type="button" id="load-mkauth-titles">ATUALIZAR TÍTULOS</button>
-        <label>Login do cliente<input id="mkauth-titles-login-filter" placeholder="Ex.: cliente.pppoe"></label>
-        <input id="mkauth-titles-filter" type="hidden" value="">
-        <button type="button" id="filter-mkauth-titles">FILTRAR</button>
+        <div class="row-actions">
+          <button class="btn-sm" type="button" id="load-mkauth-titles"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Atualizar títulos</button>
+          <label>Login do cliente<input id="mkauth-titles-login-filter" placeholder="Ex.: cliente.pppoe"></label>
+          <input id="mkauth-titles-filter" type="hidden" value="">
+          <button class="btn-sm secondary" type="button" id="filter-mkauth-titles"><i data-lucide="filter" class="w-3.5 h-3.5"></i> Filtrar</button>
+        </div>
         <p id="mkauth-titles-status">Abra este módulo para consultar os títulos.</p>
         <table>
           <thead><tr><th>Título</th><th>Login</th><th>Tipo</th><th>Valor</th><th>Situação</th><th>Vencimento</th><th>Ação</th></tr></thead>
@@ -1595,44 +1597,31 @@ async def central_dashboard(
           return matchesStatus && matchesLogin;
         }});
         titlesBody.replaceChildren();
+          const titleStatusColors = {{ vencido: 'red', pendente: 'amber', pago: 'green', liquidado: 'green', recebido: 'green', baixado: 'green' }};
           visibleTitles.forEach((title) => {{
           const row = document.createElement('tr');
-          [title.number, title.login, title.type, `R$ ${{title.amount}}`, title.status, title.due_date].forEach((value) => {{
+          [title.number, title.login, title.type, `R$ ${{title.amount}}`].forEach((value) => {{
             const cell = document.createElement('td');
             cell.textContent = value;
             row.appendChild(cell);
           }});
+          const statusCell = document.createElement('td');
+          const statusPill = document.createElement('span');
+          statusPill.className = `fin-status fin-status-${{titleStatusColors[title.status] || 'gray'}}`;
+          statusPill.textContent = title.status;
+          statusCell.appendChild(statusPill);
+          row.appendChild(statusCell);
+          const dueDateCell = document.createElement('td');
+          dueDateCell.textContent = title.due_date;
+          row.appendChild(dueDateCell);
           const actionCell = document.createElement('td');
+          actionCell.className = 'row-actions';
           const paidStatuses = ['pago', 'liquidado', 'recebido', 'baixado'];
           if (title.uuid && !paidStatuses.includes(title.status)) {{
-            const pixButton = document.createElement('button');
-            pixButton.type = 'button';
-            pixButton.textContent = 'SIMULAR PIX';
-            pixButton.addEventListener('click', async () => {{
-              if (!window.confirm(`Simular o recebimento Pix do título ${{title.number}} de ${{title.login}}? Nenhuma baixa real será realizada.`)) return;
-              pixButton.disabled = true;
-              try {{
-                const pixResponse = await fetch('/api/v1/integrations/mkauth/pix-simulations', {{
-                  method: 'POST',
-                  headers: {{ 'Content-Type': 'application/json', Accept: 'application/json' }},
-                  body: JSON.stringify({{ title_uuid: title.uuid, login: title.login, confirmed: true }}),
-                }});
-                if (!pixResponse.ok) throw new Error('request_failed');
-                const result = await pixResponse.json();
-                if (result.status !== 'simulated') throw new Error(result.reason || result.status);
-                window.alert('Pagamento de teste registrado. Nenhuma baixa real foi enviada ao MK-AUTH.');
-                await loadPixSimulations(true);
-              }} catch (error) {{
-                const reasonText = error instanceof Error ? error.message : 'simulation_failed';
-                window.alert(`Não foi possível simular o Pix: ${{reasonText}}`);
-              }} finally {{
-                pixButton.disabled = false;
-              }}
-            }});
-            actionCell.appendChild(pixButton);
             const realPaymentButton = document.createElement('button');
             realPaymentButton.type = 'button';
-            realPaymentButton.textContent = 'BAIXA REAL PIX';
+            realPaymentButton.className = 'btn-sm';
+            realPaymentButton.innerHTML = '<i data-lucide="file-down" class="w-3.5 h-3.5"></i> Baixar Boleto';
             realPaymentButton.addEventListener('click', async () => {{
               const confirmationText = window.prompt(
                 `ATENÇÃO: esta ação dará baixa REAL no título ${{title.number}}, no valor de R$ ${{title.amount}}. Digite BAIXAR para continuar:`,
@@ -1640,7 +1629,6 @@ async def central_dashboard(
               if (String(confirmationText || '').trim().toUpperCase() !== 'BAIXAR') return;
               if (!window.confirm(`Última confirmação: dar baixa REAL via Pix no título ${{title.number}} de ${{title.login}}?`)) return;
               realPaymentButton.disabled = true;
-              pixButton.disabled = true;
               try {{
                 const paymentResponse = await fetch('/api/v1/integrations/mkauth/pix-payments', {{
                   method: 'POST',
@@ -1665,7 +1653,6 @@ async def central_dashboard(
                 const reasonText = error instanceof Error ? error.message : 'payment_failed';
                 window.alert(`Não foi possível realizar a baixa: ${{reasonText}}`);
                 realPaymentButton.disabled = false;
-                pixButton.disabled = false;
               }}
             }});
             actionCell.appendChild(realPaymentButton);
@@ -1683,6 +1670,7 @@ async def central_dashboard(
           row.appendChild(cell);
           titlesBody.appendChild(row);
         }}
+        lucide.createIcons();
       }};
       const loadMkauthTitles = async (force = false, requestedLogin = '') => {{
         if (mkauthTitlesLoaded && !force) return;
