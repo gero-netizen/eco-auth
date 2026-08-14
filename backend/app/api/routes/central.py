@@ -514,16 +514,26 @@ async def central_dashboard(
     current_user = session["user"]
     can_manage_technicians = current_user["role"] in {"owner", "admin"}
     technician_rows = "".join(
-        f"<tr><td>{escape(item['name'])}</td><td>{escape(item['username'])}</td>"
-        f"<td>{'Ativo' if item['active'] else 'Inativo'}</td><td>"
+        f"<tr><td><div class='wo-tech'><span class='wo-tech-avatar'>{escape((item['name'] or '?')[:1].upper())}</span>"
+        f"{escape(item['name'])}</div></td><td>{escape(item['username'])}</td>"
+        f"<td><span class='wo-status {'wo-status-completed' if item['active'] else 'wo-status-not_completed'}'>"
+        f"{'Ativo' if item['active'] else 'Inativo'}</span></td><td>"
         + (
+            "<div class='row-actions'>"
             f"<form method='post' action='/central/technicians/{escape(item['id'])}/toggle'>"
             f"<input type='hidden' name='active' value='{'0' if item['active'] else '1'}'>"
-            f"<button class='{'secondary' if item['active'] else ''}' type='submit'>"
+            f"<button class='btn-sm {'secondary' if item['active'] else ''}' type='submit'>"
             f"{'DESATIVAR' if item['active'] else 'ATIVAR'}</button></form>"
             f"<form method='post' action='/central/technicians/{escape(item['id'])}/reset-password' "
             "onsubmit=\"return confirm('Gerar uma nova senha temporária para este técnico? A senha atual deixa de funcionar imediatamente.')\">"
-            "<button class='secondary' type='submit'>RESETAR SENHA</button></form>"
+            "<button class='btn-sm secondary' type='submit'>RESETAR SENHA</button></form>"
+            + (
+                f"<form method='post' action='/central/technicians/{escape(item['id'])}/delete' "
+                "onsubmit=\"return confirm('Excluir este técnico definitivamente? Esta ação não pode ser desfeita.')\">"
+                "<button class='btn-sm danger-link' type='submit'>EXCLUIR</button></form>"
+                if not item["active"] else ""
+            )
+            + "</div>"
             if can_manage_technicians
             else "-"
         )
@@ -533,7 +543,7 @@ async def central_dashboard(
     technician_form = ""
     if can_manage_technicians:
         technician_form = """
-        <form class="create-order" method="post" action="/central/technicians">
+        <form class="create-order wo-form" method="post" action="/central/technicians">
           <label>Nome<input name="name" minlength="3" maxlength="100" required></label>
           <label>Usuário<input name="username" minlength="3" maxlength="80" required></label>
           <label>Senha inicial<input name="password" type="password" minlength="8" maxlength="200" required></label>
@@ -753,6 +763,9 @@ async def central_dashboard(
     tr.client-active {{ background:#f5fff7; }}
     button {{ border:0; border-radius:8px; padding:9px 12px; background:var(--green); color:white; cursor:pointer; font:inherit; }}
     button:hover {{ background:var(--green-dark); }}
+    .btn-sm {{ padding:6px 10px !important; font-size:11.5px !important; border-radius:7px !important; }}
+    .row-actions {{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }}
+    .row-actions form {{ margin:0; }}
     .button-link {{ display:inline-block; border-radius:8px; padding:8px 10px; background:var(--green); color:white; text-decoration:none; white-space:nowrap; }}
     .secondary-link {{ background:#6b7280; }}
     .danger-link {{ background:#b42318; }}
@@ -3293,6 +3306,28 @@ async def central_toggle_technician(
         )
     except KeyError as error:
         raise HTTPException(404, str(error)) from error
+    return RedirectResponse("/central", status_code=303)
+
+
+@router.post("/central/technicians/{technician_id}/delete", include_in_schema=False)
+async def central_delete_technician(
+    technician_id: str,
+    session: dict = Depends(require_central_roles("owner", "admin")),
+) -> RedirectResponse:
+    organization_id = session["organization"]["id"]
+    technicians = technician_store.list_all(organization_id)
+    target = next(
+        (item for item in technicians if item["id"] == technician_id), None
+    )
+    if target is None:
+        raise HTTPException(404, "technician_not_found")
+    if target["active"]:
+        raise HTTPException(409, "desative o técnico antes de excluir")
+    technician_store.delete(technician_id, organization_id)
+    audit_store.record(
+        organization_id, session["user"], "technician_deleted", technician_id,
+        {"technician_username": target["username"]},
+    )
     return RedirectResponse("/central", status_code=303)
 
 

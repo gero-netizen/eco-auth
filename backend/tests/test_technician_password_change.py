@@ -14,6 +14,59 @@ def _technician_login(username="tecnico", password="Campo@2026") -> dict:
     return response.json()
 
 
+def _central_login() -> TestClient:
+    admin_client = TestClient(app)
+    response = admin_client.post(
+        "/central/login",
+        data={"username": "admin", "password": "Bancada@2026"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    return admin_client
+
+
+def test_deleting_an_active_technician_is_rejected() -> None:
+    from app.core.technician_store import technician_store
+
+    created = technician_store.create(
+        "Técnico Teste Exclusão Ativo", "tecnico.exclusao.ativo", "SenhaForte@1"
+    )
+    admin_client = _central_login()
+    response = admin_client.post(f"/central/technicians/{created['id']}/delete")
+    assert response.status_code == 409
+
+    # Continua existindo e ativo — a exclusão não teve efeito nenhum.
+    remaining = [
+        item
+        for item in technician_store.list_all("g7-networks")
+        if item["id"] == created["id"]
+    ]
+    assert len(remaining) == 1
+    assert remaining[0]["active"] == 1
+
+
+def test_deleting_an_inactive_technician_removes_it() -> None:
+    from app.core.technician_store import technician_store
+
+    created = technician_store.create(
+        "Técnico Teste Exclusão Inativo", "tecnico.exclusao.inativo", "SenhaForte@1"
+    )
+    technician_store.set_active(created["id"], False, "g7-networks")
+
+    admin_client = _central_login()
+    response = admin_client.post(
+        f"/central/technicians/{created['id']}/delete", follow_redirects=False
+    )
+    assert response.status_code == 303
+
+    remaining = [
+        item
+        for item in technician_store.list_all("g7-networks")
+        if item["id"] == created["id"]
+    ]
+    assert remaining == []
+
+
 def test_change_password_requires_correct_current_password() -> None:
     login = _technician_login()
     response = client.post(
